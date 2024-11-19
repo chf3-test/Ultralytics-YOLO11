@@ -281,6 +281,18 @@ class Model(nn.Module):
             weights = checks.check_file(weights, download_dir=SETTINGS["weights_dir"])  # download and return local file
         weights = checks.check_model_file_from_stem(weights)  # add suffix, i.e. yolov8n -> yolov8n.pt
 
+        # Check if the path is a directory
+        weights_path = Path(weights)
+        if weights_path.is_dir():
+            pt_files = list(weights_path.glob("*.pt"))       # Look for a `.pt` file in the directory
+            if not pt_files:
+                raise FileNotFoundError(f"No '.pt' files found in the directory: {weights_path}")
+            elif len(pt_files) > 1:
+                raise ValueError(f"Multiple '.pt' files found in the directory. "
+                                 f"Please specify one: {[file.name for file in pt_files]}")
+            else:
+                weights = pt_files[0]  # Use the first `.pt` file
+
         if Path(weights).suffix == ".pt":
             self.model, self.ckpt = attempt_load_one_weight(weights)
             self.task = self.model.args["task"]
