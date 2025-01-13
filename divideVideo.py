@@ -42,7 +42,7 @@ def extract_frames(video_path, output_dir, frame_interval):
     print(f"成功从视频中提取了 {output_count} 帧")
 
 # 使用示例
-video_path = "datasets/originalImgs/VID_20241023_133606.mp4"
+video_path = "datasets\VID20241216154601.mp4"
 output_dir = "datasets/originalImgs"
 frame_interval = 15  # 每15帧保存一次
 
