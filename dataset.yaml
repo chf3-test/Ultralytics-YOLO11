@@ -1,0 +1,6 @@
+train: D:\Users\liyz\Desktop\Labelme2YOLO-main\data\YOLODataset/images/train/
+val: D:\Users\liyz\Desktop\Labelme2YOLO-main\data\YOLODataset/images/val/
+
+nc: 6
+
+names: ['potato', 'bottle', 'carrot', 'medicine', 'battery', 'medicine_box']
