@@ -1,6 +1,6 @@
-train: D:\Users\liyz\Desktop\Labelme2YOLO-main\data_n\YOLODataset/images/train/
-val: D:\Users\liyz\Desktop\Labelme2YOLO-main\data_n\YOLODataset/images/val/
+train: D:\Users\liyz\Desktop\Labelme2YOLO-main\data111\mydata/images/train/
+val: D:\Users\liyz\Desktop\Labelme2YOLO-main\data111\mydata/images/val/
 
-nc: 7
+nc: 4
 
-names: ['carrot', 'medicine_box', 'potato', 'bottle', 'battery', 'trunip', 'medicine']
+names: ['Hazardous', 'Recycle', 'Kitchen', 'Other']
