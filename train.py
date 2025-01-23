@@ -15,6 +15,6 @@ results = model.train(data="dataset.yaml",
                       cos_lr=True,
                       dropout=0.1,
                       iou=0.6,
-                      patience=20,
+                      patience=50,
                       conf=0.5,
                       half=False)
