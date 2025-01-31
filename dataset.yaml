@@ -4,3 +4,16 @@ val: D:\Users\liyz\Desktop\Labelme2YOLO-main\data111\mydata/images/val/
 nc: 4
 
 names: ['Hazardous', 'Recycle', 'Kitchen', 'Other']
+augmentation:
+  hsv_h: 0.015  # 图像 HSV-色相增强（范围）
+  hsv_s: 0.7    # 图像 HSV-饱和度增强（范围）
+  hsv_v: 0.4    # 图像 HSV-明度增强（范围）
+  degrees: 10.0  # 旋转角度范围（+/- deg）
+  translate: 0.1 # 平移比例（相对于图像尺寸）
+  scale: 0.5     # 缩放比例范围（例如 0.5 表示缩放 50%~150%）
+  shear: 0.0     # 剪切变换强度
+  perspective: 0.001  # 透视变换参数（0~0.001）
+  flipud: 0.0    # 垂直翻转概率
+  fliplr: 0.5    # 水平翻转概率
+  mosaic: 0.3    # Mosaic 增强概率（0~1）
+  mixup: 0.1     # MixUp 增强概率（0~1）
