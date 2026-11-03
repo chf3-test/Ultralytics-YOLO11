@@ -1,51 +1,52 @@
 ---
+title: YOLO26 Sliced Inference with SAHI
 comments: true
-description: Learn how to implement YOLO26 with SAHI for sliced inference. Optimize memory usage and enhance detection accuracy for large-scale applications.
+description: Run Ultralytics YOLO26 with SAHI sliced inference to detect small objects in high-resolution images, with slicing parameters and batch prediction examples.
 keywords: YOLO26, SAHI, Sliced Inference, Object Detection, Ultralytics, High-resolution Images, Computational Efficiency, Integration Guide
 ---
 
-# Ultralytics Docs: Using YOLO26 with SAHI for Sliced Inference
+# Using YOLO26 with SAHI for Sliced Inference
 
 <a href="https://colab.research.google.com/github/ultralytics/notebooks/blob/main/notebooks/how-to-use-ultralytics-yolo-with-sahi.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open SAHI for Sliced Inference In Colab"></a>
 
-Welcome to the Ultralytics documentation on how to use YOLO26 with [SAHI](https://github.com/obss/sahi) (Slicing Aided Hyper Inference). This comprehensive guide aims to furnish you with all the essential knowledge you'll need to implement SAHI alongside YOLO26. We'll deep-dive into what SAHI is, why sliced inference is critical for large-scale applications, and how to integrate these functionalities with YOLO26 for enhanced [object detection](https://www.ultralytics.com/glossary/object-detection) performance.
+This guide shows how to use YOLO26 with [SAHI](https://github.com/obss/sahi) (Slicing Aided Hyper Inference). It covers what SAHI is, why sliced inference helps [detect small objects](https://www.ultralytics.com/blog/exploring-small-object-detection-with-ultralytics-yolo11) in large, high-resolution images, and how to run it with YOLO26 for better [object detection](https://www.ultralytics.com/glossary/object-detection) results.
 
 <p align="center">
-  <img width="1024" src="https://cdn.jsdelivr.net/gh/ultralytics/assets@main/docs/sahi-sliced-inference-overview.avif" alt="SAHI tiled inference for small objects">
+  <video width="1024" src="https://cdn.ul.run/v/875e435c815f7be5e42d0d1af5627644.mp4" autoplay loop muted playsinline aria-label="SAHI tiled inference for small objects"></video>
 </p>
 
 ## Introduction to SAHI
 
-SAHI (Slicing Aided Hyper Inference) is an innovative library designed to optimize object detection algorithms for large-scale and high-resolution imagery. Its core functionality lies in partitioning images into manageable slices, running object detection on each slice, and then stitching the results back together. SAHI is compatible with a range of object detection models, including the YOLO series, thereby offering flexibility while ensuring optimized use of computational resources.
+SAHI (Slicing Aided Hyper Inference) is a library designed to improve object detection on large-scale and high-resolution imagery. It partitions images into manageable slices, runs object detection on each slice, and then stitches the results back together. SAHI is compatible with a range of object detection models, including the YOLO series.
 
 <p align="center">
   <br>
-  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/ILqMBah5ZvI"
+  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/Kpl6cOUKbb8"
     title="YouTube video player" frameborder="0"
     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
     allowfullscreen>
   </iframe>
   <br>
-  <strong>Watch:</strong> Inference with SAHI (Slicing Aided Hyper Inference) using Ultralytics YOLO26
+  <strong>Watch:</strong> How to use SAHI with Ultralytics YOLO26 to Detect Small Objects | Slicing Aided Hyper Inference 🚀
 </p>
 
 ### Key Features of SAHI
 
-- **Seamless Integration**: SAHI integrates effortlessly with YOLO models, meaning you can start slicing and detecting without a lot of code modification.
-- **Resource Efficiency**: By breaking down large images into smaller parts, SAHI optimizes the memory usage, allowing you to run high-quality detection on hardware with limited resources.
-- **High [Accuracy](https://www.ultralytics.com/glossary/accuracy)**: SAHI maintains the detection accuracy by employing smart algorithms to merge overlapping detection boxes during the stitching process.
+- **Simple Integration**: SAHI works with Ultralytics YOLO models through `AutoDetectionModel`, so you can start slicing and detecting with little code modification.
+- **Resource Efficiency**: By breaking down large images into smaller parts, SAHI keeps memory usage low, allowing you to run high-quality detection on hardware with limited resources.
+- **High [Accuracy](https://www.ultralytics.com/glossary/accuracy)**: SAHI merges overlapping detections from adjacent slices during stitching, using postprocessing such as [non-maximum suppression](https://www.ultralytics.com/glossary/non-maximum-suppression-nms) or non-maximum merging.
 
 ## What is Sliced Inference?
 
-Sliced Inference refers to the practice of subdividing a large or high-resolution image into smaller segments (slices), conducting object detection on these slices, and then recompiling the slices to reconstruct the object locations on the original image. This technique is invaluable in scenarios where computational resources are limited or when working with extremely high-resolution images that could otherwise lead to memory issues.
+Sliced Inference refers to the practice of subdividing a large or high-resolution image into smaller segments (slices), conducting object detection on these slices, and then mapping the detections back to object locations on the original image. This technique is useful when computational resources are limited, when working with extremely high-resolution images that could otherwise lead to memory issues, or when objects are too small to detect after the full image is downscaled to the model input size.
 
 ### Benefits of Sliced Inference
 
-- **Reduced Computational Burden**: Smaller image slices are faster to process, and they consume less memory, enabling smoother operation on lower-end hardware.
+- **Reduced Memory Burden**: Each slice is small, so peak memory stays low even for very large images, enabling smoother operation on lower-end hardware.
 
-- **Preserved Detection Quality**: Since each slice is treated independently, there is no reduction in the quality of object detection, provided the slices are large enough to capture the objects of interest.
+- **Better Small-Object Detection**: Each slice is processed at the model's input resolution, so small objects occupy more pixels and are easier to detect, provided the slices are large enough to capture the objects of interest.
 
-- **Enhanced Scalability**: The technique allows for object detection to be more easily scaled across different sizes and resolutions of images, making it ideal for a wide range of applications from satellite imagery to medical diagnostics.
+- **Enhanced Scalability**: The technique allows for object detection to be more easily scaled across different sizes and resolutions of images, making it suitable for a wide range of applications from [satellite imagery](https://www.ultralytics.com/glossary/satellite-image-analysis) to medical diagnostics.
 
 <table border="0">
   <tr>
@@ -53,8 +54,8 @@ Sliced Inference refers to the practice of subdividing a large or high-resolutio
     <th>YOLO26 with SAHI</th>
   </tr>
   <tr>
-    <td><img src="https://cdn.jsdelivr.net/gh/ultralytics/assets@main/docs/yolov8-without-sahi.avif" alt="YOLO26 without SAHI" width="640"></td>
-    <td><img src="https://cdn.jsdelivr.net/gh/ultralytics/assets@main/docs/yolov8-with-sahi.avif" alt="YOLO26 with SAHI" width="640"></td>
+    <td><img src="https://cdn.ul.run/i/1865c0db3cd5e950fa75d07c6f5f38bb.avif" alt="YOLO26 detections on a high-resolution image without SAHI slicing" width="640"></td>
+    <td><img src="https://cdn.ul.run/i/9f337a31d7085922645a191325a4a419.avif" alt="YOLO26 detections on a high-resolution image with SAHI sliced inference" width="640"></td>
   </tr>
 </table>
 
@@ -70,15 +71,10 @@ pip install -U ultralytics sahi
 
 ### Import Modules and Download Resources
 
-Here's how to import the necessary modules and download a YOLO26 model and some test images:
+Here's how to download some test images:
 
 ```python
 from sahi.utils.file import download_from_url
-from sahi.utils.ultralytics import download_yolo26n_model
-
-# Download YOLO26 model
-model_path = "models/yolo26n.pt"
-download_yolo26n_model(model_path)
 
 # Download test images
 download_from_url(
@@ -102,7 +98,7 @@ from sahi import AutoDetectionModel
 
 detection_model = AutoDetectionModel.from_pretrained(
     model_type="ultralytics",
-    model_path=model_path,
+    model_path="yolo26n.pt",
     confidence_threshold=0.3,
     device="cpu",  # or 'cuda:0'
 )
@@ -110,17 +106,14 @@ detection_model = AutoDetectionModel.from_pretrained(
 
 ### Perform Standard Prediction
 
-Perform standard inference using an image path or a numpy image.
+Perform standard inference using an image path.
 
 ```python
 from sahi.predict import get_prediction
-from sahi.utils.cv import read_image
 
-# With an image path
 result = get_prediction("demo_data/small-vehicles1.jpeg", detection_model)
 
-# With a numpy image
-result_with_np_image = get_prediction(read_image("demo_data/small-vehicles1.jpeg"), detection_model)
+result.export_visuals(export_dir="demo_data/", hide_conf=True)
 ```
 
 ### Visualize Results
@@ -128,10 +121,13 @@ result_with_np_image = get_prediction(read_image("demo_data/small-vehicles1.jpeg
 Export and visualize the predicted bounding boxes and masks:
 
 ```python
-from IPython.display import Image
+from PIL import Image
 
-result.export_visuals(export_dir="demo_data/")
-Image("demo_data/prediction_visual.png")
+# Open the predicted image
+processed_image = Image.open("demo_data/prediction_visual.png")
+
+# Display the predicted image
+processed_image.show()
 ```
 
 ## Sliced Inference with YOLO26
@@ -139,6 +135,7 @@ Image("demo_data/prediction_visual.png")
 Perform sliced inference by specifying the slice dimensions and overlap ratios:
 
 ```python
+from PIL import Image
 from sahi.predict import get_sliced_prediction
 
 result = get_sliced_prediction(
@@ -149,6 +146,15 @@ result = get_sliced_prediction(
     overlap_height_ratio=0.2,
     overlap_width_ratio=0.2,
 )
+
+# Export results
+result.export_visuals(export_dir="demo_data/", hide_conf=True)
+
+# Open the predicted image
+processed_image = Image.open("demo_data/prediction_visual.png")
+
+# Display the predicted image
+processed_image.show()
 ```
 
 ## Handling Prediction Results
@@ -159,12 +165,14 @@ SAHI provides a `PredictionResult` object, which can be converted into various a
 # Access the object prediction list
 object_prediction_list = result.object_prediction_list
 
-# Convert to COCO annotation, COCO prediction, imantics, and fiftyone formats
+# Convert to COCO annotation and COCO prediction formats
 result.to_coco_annotations()[:3]
 result.to_coco_predictions(image_id=1)[:3]
-result.to_imantics_annotations()[:3]
-result.to_fiftyone_detections()[:3]
 ```
+
+!!! tip "Additional export formats"
+
+    `PredictionResult` can also convert detections to [imantics](https://github.com/jsbroks/imantics) and [FiftyOne](https://github.com/voxel51/fiftyone) objects with `result.to_imantics_annotations()` and `result.to_fiftyone_detections()`. These methods require the respective packages, so install them first with `pip install imantics fiftyone`.
 
 ## Batch Prediction
 
@@ -175,7 +183,7 @@ from sahi.predict import predict
 
 predict(
     model_type="ultralytics",
-    model_path="path/to/yolo26n.pt",
+    model_path="yolo26n.pt",
     model_device="cpu",  # or 'cuda:0'
     model_confidence_threshold=0.4,
     source="path/to/dir",
@@ -192,7 +200,7 @@ You are now ready to use YOLO26 with SAHI for both standard and sliced inference
 
 If you use SAHI in your research or development work, please cite the original SAHI paper and acknowledge the authors:
 
-!!! quote ""
+!!! quote "Citation"
 
     === "BibTeX"
 
@@ -207,44 +215,41 @@ If you use SAHI in your research or development work, please cite the original S
         }
         ```
 
-We extend our thanks to the SAHI research group for creating and maintaining this invaluable resource for the [computer vision](https://www.ultralytics.com/glossary/computer-vision-cv) community. For more information about SAHI and its creators, visit the [SAHI GitHub repository](https://github.com/obss/sahi).
+We extend our thanks to the SAHI research group for creating and maintaining this resource for the [computer vision](https://www.ultralytics.com/glossary/computer-vision-cv) community.
 
 ## FAQ
 
 ### How can I integrate YOLO26 with SAHI for sliced inference in object detection?
 
-Integrating Ultralytics YOLO26 with SAHI (Slicing Aided Hyper Inference) for sliced inference optimizes your object detection tasks on high-resolution images by partitioning them into manageable slices. This approach improves memory usage and ensures high detection accuracy. To get started, you need to install the ultralytics and sahi libraries:
+Integrating Ultralytics YOLO26 with SAHI (Slicing Aided Hyper Inference) for [sliced inference](#sliced-inference-with-yolo26) improves object detection on high-resolution images by partitioning them into manageable slices. This approach helps detect small objects while keeping memory usage manageable. To get started, you need to install the ultralytics and sahi libraries:
 
 ```bash
 pip install -U ultralytics sahi
 ```
 
-Then, download a YOLO26 model and test images:
+Then, download test images:
 
 ```python
 from sahi.utils.file import download_from_url
-from sahi.utils.ultralytics import download_yolo26n_model
-
-# Download YOLO26 model
-model_path = "models/yolo26n.pt"
-download_yolo26n_model(model_path)
 
 # Download test images
 download_from_url(
     "https://raw.githubusercontent.com/obss/sahi/main/demo/demo_data/small-vehicles1.jpeg",
     "demo_data/small-vehicles1.jpeg",
 )
+download_from_url(
+    "https://raw.githubusercontent.com/obss/sahi/main/demo/demo_data/terrain2.png",
+    "demo_data/terrain2.png",
+)
 ```
-
-For more detailed instructions, refer to our [Sliced Inference guide](#sliced-inference-with-yolo26).
 
 ### Why should I use SAHI with YOLO26 for object detection on large images?
 
 Using SAHI with Ultralytics YOLO26 for object detection on large images offers several benefits:
 
-- **Reduced Computational Burden**: Smaller slices are faster to process and consume less memory, making it feasible to run high-quality detections on hardware with limited resources.
-- **Maintained Detection Accuracy**: SAHI uses intelligent algorithms to merge overlapping boxes, preserving the detection quality.
-- **Enhanced Scalability**: By scaling object detection tasks across different image sizes and resolutions, SAHI becomes ideal for various applications, such as satellite imagery analysis and medical diagnostics.
+- **Reduced Memory Burden**: Smaller slices consume less memory, making it feasible to run high-quality detections on hardware with limited resources.
+- **Better Small-Object Detection**: Slices keep small objects large relative to the model input, and SAHI merges overlapping boxes from adjacent slices.
+- **Enhanced Scalability**: By scaling object detection tasks across different image sizes and resolutions, SAHI is suitable for various applications, such as satellite imagery analysis and medical diagnostics.
 
 Learn more about the [benefits of sliced inference](#benefits-of-sliced-inference) in our documentation.
 
@@ -253,10 +258,13 @@ Learn more about the [benefits of sliced inference](#benefits-of-sliced-inferenc
 Yes, you can visualize prediction results when using YOLO26 with SAHI. Here's how you can export and visualize the results:
 
 ```python
-from IPython.display import Image
+from PIL import Image
 
-result.export_visuals(export_dir="demo_data/")
-Image("demo_data/prediction_visual.png")
+result.export_visuals(export_dir="demo_data/", hide_conf=True)
+
+processed_image = Image.open("demo_data/prediction_visual.png")
+
+processed_image.show()
 ```
 
 This command will save the visualized predictions to the specified directory, and you can then load the image to view it in your notebook or application. For a detailed guide, check out the [Standard Inference section](#visualize-results).
@@ -265,9 +273,9 @@ This command will save the visualized predictions to the specified directory, an
 
 SAHI (Slicing Aided Hyper Inference) offers several features that complement Ultralytics YOLO26 for object detection:
 
-- **Seamless Integration**: SAHI easily integrates with YOLO models, requiring minimal code adjustments.
-- **Resource Efficiency**: It partitions large images into smaller slices, which optimizes memory usage and speed.
-- **High Accuracy**: By effectively merging overlapping detection boxes during the stitching process, SAHI maintains high detection accuracy.
+- **Simple Integration**: SAHI works with YOLO models with minimal code adjustments.
+- **Resource Efficiency**: It partitions large images into smaller slices, which keeps memory usage low.
+- **High Accuracy**: By merging overlapping detection boxes during the stitching process, SAHI avoids duplicate detections at slice boundaries.
 
 For a deeper understanding, read about SAHI's [key features](#key-features-of-sahi).
 
@@ -277,7 +285,7 @@ To handle large-scale inference projects using YOLO26 and SAHI, follow these bes
 
 1. **Install Required Libraries**: Ensure that you have the latest versions of ultralytics and sahi.
 2. **Configure Sliced Inference**: Determine the optimal slice dimensions and overlap ratios for your specific project.
-3. **Run Batch Predictions**: Use SAHI's capabilities to perform batch predictions on a directory of images, which improves efficiency.
+3. **Run Batch Predictions**: Use SAHI's `predict` function to run batch predictions on a directory of images.
 
 Example for batch prediction:
 

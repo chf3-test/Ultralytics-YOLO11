@@ -9,6 +9,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import torch
 
 from ultralytics import YOLO
 from ultralytics.solutions.config import SolutionConfig
@@ -34,7 +35,7 @@ class BaseSolution:
         annotator: Annotator instance for drawing on images.
         tracks: YOLO tracking results from the latest inference.
         track_data: Extracted tracking data (boxes or OBB) from tracks.
-        boxes (list): Bounding box coordinates from tracking results.
+        boxes (torch.Tensor | list): Bounding boxes from tracking results, as (N, 4) xyxy or (N, 4, 2) OBB corners.
         clss (list[int]): Class indices from tracking results.
         track_ids (list[int]): Track IDs from tracking results.
         confs (list[float]): Confidence scores from tracking results.
@@ -59,6 +60,8 @@ class BaseSolution:
         adjust_box_label: Generate formatted label for bounding box.
         extract_tracks: Apply object tracking and extract tracks from input image.
         store_tracking_history: Store object tracking history for given track ID and bounding box.
+        forget_tracks: Drop tracking history for track IDs retired by the tracker.
+        get_enclosing_box: Return the axis-aligned [x1, y1, x2, y2] box enclosing a detection or OBB box.
         initialize_region: Initialize counting region and line segment based on configuration.
         display_output: Display processing results including frames or saved results.
         process: Process method to be implemented by each Solution subclass.
@@ -115,7 +118,7 @@ class BaseSolution:
         self.device = self.CFG["device"]
 
         self.track_add_args = {  # Tracker additional arguments for advance configuration
-            k: self.CFG[k] for k in {"iou", "conf", "device", "max_det", "half", "tracker"}
+            k: self.CFG[k] for k in ("iou", "conf", "device", "max_det", "quantize", "tracker", "imgsz")
         }  # verbose must be passed to track method; setting it False in YOLO still logs the track information.
 
         if is_cli and self.CFG["source"] is None:
@@ -179,6 +182,16 @@ class BaseSolution:
         else:
             self.LOGGER.warning("No tracks found.")
             self.boxes, self.clss, self.track_ids, self.confs = [], [], [], []
+        self.forget_tracks([track.track_id for track in self.model.predictor.trackers[0].removed_stracks_frame])
+
+    def forget_tracks(self, track_ids: list[int]) -> None:
+        """Drop bookkeeping for IDs retired by the active tracker.
+
+        Args:
+            track_ids (list[int]): Track IDs removed by the tracker in the latest frame.
+        """
+        for track_id in track_ids:
+            self.track_history.pop(track_id, None)
 
     def store_tracking_history(self, track_id: int, box) -> None:
         """Store the tracking history of an object.
@@ -188,17 +201,39 @@ class BaseSolution:
 
         Args:
             track_id (int): The unique identifier for the tracked object.
-            box (list[float]): The bounding box coordinates of the object in the format [x1, y1, x2, y2].
+            box (torch.Tensor): The bounding box of the object in [x1, y1, x2, y2] format or as (4, 2) OBB corners.
 
         Examples:
+            >>> import torch
             >>> solution = BaseSolution()
-            >>> solution.store_tracking_history(1, [100, 200, 300, 400])
+            >>> solution.store_tracking_history(1, torch.tensor([100.0, 200.0, 300.0, 400.0]))
         """
         # Store tracking history
         self.track_line = self.track_history[track_id]
-        self.track_line.append(tuple(box.mean(dim=0)) if box.numel() > 4 else (box[:4:2].mean(), box[1:4:2].mean()))
+        self.track_line.append(tuple(box.reshape(-1, 2).mean(dim=0).tolist()))  # (x, y) center as Python floats
         if len(self.track_line) > 30:
             self.track_line.pop(0)
+
+    @staticmethod
+    def get_enclosing_box(box: torch.Tensor | list[float]) -> torch.Tensor | list[float]:
+        """Return the axis-aligned box [x1, y1, x2, y2] enclosing a box extracted by `extract_tracks`.
+
+        Boxes from OBB models are (4, 2) xyxyxyxy corner points, while boxes from detection models are already
+        axis-aligned [x1, y1, x2, y2]. This method normalizes both formats to [x1, y1, x2, y2] for solutions that
+        require axis-aligned coordinates, e.g. for image slicing or box centers.
+
+        Args:
+            box (torch.Tensor | list[float]): Bounding box in [x1, y1, x2, y2] format or (4, 2) OBB corner points.
+
+        Returns:
+            (torch.Tensor | list[float]): Axis-aligned bounding box in [x1, y1, x2, y2] format.
+
+        Examples:
+            >>> import torch
+            >>> BaseSolution.get_enclosing_box(torch.tensor([[2.0, 1.0], [4.0, 3.0], [2.0, 5.0], [0.0, 3.0]]))
+            tensor([0., 1., 4., 5.])
+        """
+        return torch.cat([box.amin(0), box.amax(0)]) if isinstance(box, torch.Tensor) and box.numel() > 4 else box
 
     def initialize_region(self) -> None:
         """Initialize the counting region and line segment based on configuration settings."""
@@ -209,8 +244,7 @@ class BaseSolution:
         )  # region or line
 
     def display_output(self, plot_im: np.ndarray) -> None:
-        """Display the results of the processing, which could involve showing frames, printing counts, or saving
-        results.
+        """Display the processed frame in an OpenCV window when `show=True` and the environment supports it.
 
         This method is responsible for visualizing the output of the object detection and tracking process. It displays
         the processed frame with annotations, and allows for user interaction to close the display.
@@ -248,12 +282,17 @@ class BaseSolution:
         if self.CFG["verbose"]:
             self.frame_no += 1
             counts = Counter(self.clss)  # Only for logging.
+            # Use model input shape (reflects imgsz) if predictor is available
+            if hasattr(self.model, "predictor") and self.model.predictor and hasattr(self.model.predictor, "imgsz"):
+                input_h, input_w = self.model.predictor.imgsz
+            else:
+                input_h, input_w = result.plot_im.shape[:2]
             LOGGER.info(
-                f"{self.frame_no}: {result.plot_im.shape[0]}x{result.plot_im.shape[1]} {solution_speed:.1f}ms,"
+                f"{self.frame_no}: {input_h}x{input_w} {solution_speed:.1f}ms,"
                 f" {', '.join([f'{v} {self.names[k]}' for k, v in counts.items()])}\n"
                 f"Speed: {track_or_predict_speed:.1f}ms {track_or_predict}, "
                 f"{solution_speed:.1f}ms solution per image at shape "
-                f"(1, {getattr(self.model, 'ch', 3)}, {result.plot_im.shape[0]}, {result.plot_im.shape[1]})\n"
+                f"(1, {getattr(self.model, 'channels', 3)}, {input_h}, {input_w})\n"
             )
         return result
 
@@ -318,14 +357,14 @@ class SolutionAnnotator(Annotator):
 
     def draw_region(
         self,
-        reg_pts: list[tuple[int, int]] | None = None,
+        reg_pts: list[tuple[int, int]],
         color: tuple[int, int, int] = (0, 255, 0),
         thickness: int = 5,
     ):
         """Draw a region or line on the image.
 
         Args:
-            reg_pts (list[tuple[int, int]], optional): Region points (for line 2 points, for region 4+ points).
+            reg_pts (list[tuple[int, int]]): Region points (for line 2 points, for region 4+ points).
             color (tuple[int, int, int]): BGR color value for the region (OpenCV format).
             thickness (int): Line thickness for drawing the region.
         """
@@ -333,12 +372,12 @@ class SolutionAnnotator(Annotator):
 
         # Draw small circles at the corner points
         for point in reg_pts:
-            cv2.circle(self.im, (point[0], point[1]), thickness * 2, color, -1)  # -1 fills the circle
+            cv2.circle(self.im, (int(point[0]), int(point[1])), thickness * 2, color, -1)  # -1 fills the circle
 
     def queue_counts_display(
         self,
         label: str,
-        points: list[tuple[int, int]] | None = None,
+        points: list[tuple[int, int]],
         region_color: tuple[int, int, int] = (255, 255, 255),
         txt_color: tuple[int, int, int] = (0, 0, 0),
     ):
@@ -346,14 +385,14 @@ class SolutionAnnotator(Annotator):
 
         Args:
             label (str): Queue counts label.
-            points (list[tuple[int, int]], optional): Region points for center point calculation to display text.
+            points (list[tuple[int, int]]): Region points for center point calculation to display text.
             region_color (tuple[int, int, int]): BGR queue region color (OpenCV format).
             txt_color (tuple[int, int, int]): BGR text color (OpenCV format).
         """
         x_values = [point[0] for point in points]
         y_values = [point[1] for point in points]
-        center_x = sum(x_values) // len(points)
-        center_y = sum(y_values) // len(points)
+        center_x = int(sum(x_values) // len(points))
+        center_y = int(sum(y_values) // len(points))
 
         text_size = cv2.getTextSize(label, 0, fontScale=self.sf, thickness=self.tf)[0]
         text_width = text_size[0]
@@ -466,7 +505,8 @@ class SolutionAnnotator(Annotator):
 
         Args:
             keypoints (list[list[float]]): Keypoints data to be plotted, each in format [x, y, confidence].
-            indices (list[int], optional): Keypoint indices to be plotted.
+            indices (list[int], optional): Keypoint indices to be plotted, defaults to [2, 5, 7]. The drawing order
+                follows the order of this list.
             radius (int): Keypoint radius.
             conf_thresh (float): Confidence threshold for keypoints.
 
@@ -478,7 +518,12 @@ class SolutionAnnotator(Annotator):
             Modifies self.im in-place.
         """
         indices = indices or [2, 5, 7]
-        points = [(int(k[0]), int(k[1])) for i, k in enumerate(keypoints) if i in indices and k[2] >= conf_thresh]
+        n = len(keypoints)
+        points = [
+            (int(keypoints[j][0]), int(keypoints[j][1]))
+            for j in indices
+            if 0 <= j < n and (float(keypoints[j][2]) if len(keypoints[j]) > 2 else 1.0) >= conf_thresh
+        ]
 
         # Draw lines between consecutive points
         for start, end in zip(points[:-1], points[1:]):
@@ -525,20 +570,20 @@ class SolutionAnnotator(Annotator):
 
     def plot_angle_and_count_and_stage(
         self,
-        angle_text: str,
-        count_text: str,
+        angle_text: float,
+        count_text: int,
         stage_text: str,
-        center_kpt: list[int],
+        center_kpt: list[float],
         color: tuple[int, int, int] = (104, 31, 17),
         txt_color: tuple[int, int, int] = (255, 255, 255),
     ):
         """Plot the pose angle, count value, and step stage for workout monitoring.
 
         Args:
-            angle_text (str): Angle value for workout monitoring.
-            count_text (str): Counts value for workout monitoring.
+            angle_text (float): Angle value in degrees for workout monitoring, displayed with 2 decimals.
+            count_text (int): Repetition count for workout monitoring.
             stage_text (str): Stage decision for workout monitoring.
-            center_kpt (list[int]): Centroid pose index for workout monitoring.
+            center_kpt (list[float]): Keypoint (x, y) coordinates used as the anchor position for the text.
             color (tuple[int, int, int]): Text background color.
             txt_color (tuple[int, int, int]): Text foreground color.
         """
@@ -771,18 +816,19 @@ class SolutionResults:
         plot_im (np.ndarray): Processed image with counts, blurred, or other effects from solutions.
         in_count (int): The total number of "in" counts in a video stream.
         out_count (int): The total number of "out" counts in a video stream.
-        classwise_count (dict[str, int]): A dictionary containing counts of objects categorized by class.
+        classwise_count (dict[str, dict[str, int] | int]): Per-class counts, e.g. {"person": {"IN": 2, "OUT": 1}} for
+            ObjectCounter and Heatmap, or {"person": 3} for Analytics.
         queue_count (int): The count of objects in a queue or waiting area.
-        workout_count (int): The count of workout repetitions.
-        workout_angle (float): The angle calculated during a workout exercise.
-        workout_stage (str): The current stage of the workout.
+        workout_count (list[int]): Per-track workout repetition counts (one entry per currently tracked individual).
+        workout_angle (list[float]): Per-track exercise angles for currently tracked individuals.
+        workout_stage (list[str]): Per-track current exercise stage for currently tracked individuals.
         pixels_distance (float): The calculated distance in pixels between two points or objects.
         available_slots (int): The number of available slots in a monitored area.
         filled_slots (int): The number of filled slots in a monitored area.
         email_sent (bool): A flag indicating whether an email notification was sent.
         total_tracks (int): The total number of tracked objects.
         region_counts (dict[str, int]): The count of objects within a specific region.
-        speed_dict (dict[str, float]): A dictionary containing speed information for tracked objects.
+        speed_dict (dict[int, int]): Estimated speed in km/h per track ID from SpeedEstimator.
         total_crop_objects (int): Total number of cropped objects using ObjectCropper class.
         speed (dict[str, float]): Performance timing information for tracking and solution processing.
     """
@@ -798,9 +844,9 @@ class SolutionResults:
         self.out_count = 0
         self.classwise_count = {}
         self.queue_count = 0
-        self.workout_count = 0
-        self.workout_angle = 0.0
-        self.workout_stage = None
+        self.workout_count = []
+        self.workout_angle = []
+        self.workout_stage = []
         self.pixels_distance = 0.0
         self.available_slots = 0
         self.filled_slots = 0
@@ -820,9 +866,4 @@ class SolutionResults:
         Returns:
             (str): A string representation listing non-null attributes.
         """
-        attrs = {
-            k: v
-            for k, v in self.__dict__.items()
-            if k != "plot_im" and v not in [None, {}, 0, 0.0, False]  # Exclude `plot_im` explicitly
-        }
-        return ", ".join(f"{k}={v}" for k, v in attrs.items())
+        return ", ".join(f"{k}={v}" for k, v in self.__dict__.items() if k != "plot_im" and v)

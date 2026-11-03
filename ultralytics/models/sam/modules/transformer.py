@@ -53,7 +53,7 @@ class TwoWayTransformer(nn.Module):
             embedding_dim (int): Channel dimension for input embeddings.
             num_heads (int): Number of heads for multihead attention. Must divide embedding_dim.
             mlp_dim (int): Internal channel dimension for the MLP block.
-            activation (Type[nn.Module], optional): Activation function to use in the MLP block.
+            activation (type[nn.Module], optional): Activation function to use in the MLP block.
             attention_downsample_rate (int, optional): Downsampling rate for attention mechanism.
         """
         super().__init__()
@@ -89,7 +89,8 @@ class TwoWayTransformer(nn.Module):
         Args:
             image_embedding (torch.Tensor): Image to attend to, with shape (B, embedding_dim, H, W).
             image_pe (torch.Tensor): Positional encoding to add to the image, with same shape as image_embedding.
-            point_embedding (torch.Tensor): Embedding to add to query points, with shape (B, N_points, embedding_dim).
+            point_embedding (torch.Tensor): Query point embeddings, also used as their positional encoding, with shape
+                (B, N_points, embedding_dim).
 
         Returns:
             queries (torch.Tensor): Processed point embeddings with shape (B, N_points, embedding_dim).
@@ -172,7 +173,7 @@ class TwoWayAttentionBlock(nn.Module):
             embedding_dim (int): Channel dimension of the embeddings.
             num_heads (int): Number of attention heads in the attention layers.
             mlp_dim (int, optional): Hidden dimension of the MLP block.
-            activation (Type[nn.Module], optional): Activation function for the MLP block.
+            activation (type[nn.Module], optional): Activation function for the MLP block.
             attention_downsample_rate (int, optional): Downsampling rate for the attention mechanism.
             skip_first_layer_pe (bool, optional): Whether to skip positional encoding in the first layer.
         """
@@ -316,8 +317,8 @@ class Attention(nn.Module):
 
         Args:
             q (torch.Tensor): Query tensor with shape (B, N_q, embedding_dim).
-            k (torch.Tensor): Key tensor with shape (B, N_k, embedding_dim).
-            v (torch.Tensor): Value tensor with shape (B, N_k, embedding_dim).
+            k (torch.Tensor): Key tensor with shape (B, N_k, kv_in_dim).
+            v (torch.Tensor): Value tensor with shape (B, N_k, kv_in_dim).
 
         Returns:
             (torch.Tensor): Output tensor after attention with shape (B, N_q, embedding_dim).

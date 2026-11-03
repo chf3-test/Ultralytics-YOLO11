@@ -22,7 +22,7 @@ class RegionCounter(BaseSolution):
             polygon coordinates, and display colors.
         counting_regions (list): List storing all defined regions, where each entry is based on `region_template` and
             includes specific region settings like name, coordinates, and color.
-        region_counts (dict): Dictionary storing the count of objects for each named region.
+        region_counts (dict[str, int]): Dictionary storing the count of objects for each named region.
 
     Methods:
         add_region: Add a new counting region with specified attributes.
@@ -43,6 +43,7 @@ class RegionCounter(BaseSolution):
         self.region_template = {
             "name": "Default Region",
             "polygon": None,
+            "prepared_polygon": None,
             "counts": 0,
             "region_color": (255, 255, 255),
             "text_color": (0, 0, 0),
@@ -68,12 +69,22 @@ class RegionCounter(BaseSolution):
 
         Returns:
             (dict[str, Any]): Region information including name, polygon, and display colors.
+
+        Raises:
+            ValueError: If `polygon_points` contains fewer than 3 points.
         """
+        if len(polygon_points) < 3:
+            raise ValueError(
+                f"RegionCounter requires regions with at least 3 points to form a polygon, "
+                f"but got {len(polygon_points)} for '{name}'."
+            )
+        polygon = self.Polygon(polygon_points)
         region = self.region_template.copy()
         region.update(
             {
                 "name": name,
-                "polygon": self.Polygon(polygon_points),
+                "polygon": polygon,
+                "prepared_polygon": self.prep(polygon),
                 "region_color": region_color,
                 "text_color": text_color,
             }
@@ -82,14 +93,17 @@ class RegionCounter(BaseSolution):
         return region
 
     def initialize_regions(self):
-        """Initialize regions from `self.region` only once."""
+        """Initialize counting regions from `self.region`, using a default rectangle if no region is provided.
+
+        `self.region` may be a list of points (a single region named "Region#01") or a dict mapping region names to
+        point lists.
+        """
         if self.region is None:
             self.initialize_region()
         if not isinstance(self.region, dict):  # Ensure self.region is initialized and structured as a dictionary
             self.region = {"Region#01": self.region}
         for i, (name, pts) in enumerate(self.region.items()):
-            region = self.add_region(name, pts, colors(i, True), (255, 255, 255))
-            region["prepared_polygon"] = self.prep(region["polygon"])
+            self.add_region(name, pts, colors(i, True), (255, 255, 255))
 
     def process(self, im0: np.ndarray) -> SolutionResults:
         """Process the input frame to detect and count objects within each defined region.
@@ -103,10 +117,12 @@ class RegionCounter(BaseSolution):
         """
         self.extract_tracks(im0)
         annotator = SolutionAnnotator(im0, line_width=self.line_width)
+        self.region_counts = {region["name"]: 0 for region in self.counting_regions}
 
         for box, cls, track_id, conf in zip(self.boxes, self.clss, self.track_ids, self.confs):
             annotator.box_label(box, label=self.adjust_box_label(cls, conf, track_id), color=colors(track_id, True))
-            center = self.Point(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
+            x0, y0, x1, y1 = self.get_enclosing_box(box)
+            center = self.Point(((x0 + x1) / 2, (y0 + y1) / 2))
             for region in self.counting_regions:
                 if region["prepared_polygon"].contains(center):
                     region["counts"] += 1
@@ -115,9 +131,8 @@ class RegionCounter(BaseSolution):
         # Display region counts
         for region in self.counting_regions:
             poly = region["polygon"]
-            pts = list(map(tuple, np.array(poly.exterior.coords, dtype=np.int32)))
             (x1, y1), (x2, y2) = [(int(poly.centroid.x), int(poly.centroid.y))] * 2
-            annotator.draw_region(pts, region["region_color"], self.line_width * 2)
+            annotator.draw_region(poly.exterior.coords, region["region_color"], self.line_width * 2)
             annotator.adaptive_label(
                 [x1, y1, x2, y2],
                 label=str(region["counts"]),

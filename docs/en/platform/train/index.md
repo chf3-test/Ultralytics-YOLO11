@@ -1,78 +1,81 @@
 ---
+plans: [free, pro, enterprise]
+title: Cloud Model Training
 comments: true
-description: Learn about model training in Ultralytics Platform including project organization, cloud training, and real-time metrics streaming.
+description: Model training on Ultralytics Platform. Organize projects, train YOLO models on cloud GPUs or your own hardware, monitor live metrics, and export results.
 keywords: Ultralytics Platform, model training, cloud training, YOLO, GPU training, machine learning, deep learning
 ---
 
 # Model Training
 
-[Ultralytics Platform](https://platform.ultralytics.com) provides comprehensive tools for training YOLO models, from organizing experiments to running cloud training jobs with real-time metrics streaming.
+[Ultralytics Platform](https://platform.ultralytics.com) provides tools for [training YOLO models](../../modes/train.md), from organizing experiments to [running cloud training jobs](https://www.ultralytics.com/blog/train-yolo-models-faster-with-ultralytics-platform) with real-time metrics streaming.
+
+<p align="center">
+  <br>
+  <iframe loading="lazy" width="720" height="405" src="https://www.youtube.com/embed/bajkq0NrSN8"
+    title="YouTube video player" frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowfullscreen>
+  </iframe>
+  <br>
+  <strong>Watch:</strong> Get Started with Ultralytics Platform - Train
+</p>
 
 ## Overview
 
 The Training section helps you:
 
-- **Organize** models into projects for easier management
+- **Organize** models into [projects](projects.md) for easier management
 - **Train** on cloud GPUs with a single click
 - **Monitor** real-time metrics during training
 - **Compare** model performance across experiments
+- **Export** to 22 deployment formats (see [supported formats](models.md#supported-formats))
 
-<!-- Screenshot: platform-train-overview.avif -->
+![Ultralytics Platform Train Overview](https://cdn.ul.run/i/19e52629fb54e22f8a73cd7e1bb3ea76.avif)<!-- screenshot -->
 
 ## Workflow
 
 ```mermaid
-graph LR
-    A[📁 Project] --> B[⚙️ Configure]
-    B --> C[🚀 Train]
-    C --> D[📈 Monitor]
-    D --> E[📦 Export]
-
-    style A fill:#4CAF50,color:#fff
-    style B fill:#2196F3,color:#fff
-    style C fill:#FF9800,color:#fff
-    style D fill:#9C27B0,color:#fff
-    style E fill:#00BCD4,color:#fff
+flowchart TD
+    A([Project]) --> B[Configure]
+    B --> C[Train]
+    C --> D[Monitor]
+    D --> E([Export])
 ```
 
-| Stage         | Description                                         |
-| ------------- | --------------------------------------------------- |
-| **Project**   | Create a workspace to organize related models       |
-| **Configure** | Select dataset, base model, and training parameters |
-| **Train**     | Run on cloud GPUs or your local hardware            |
-| **Monitor**   | View real-time loss curves and metrics              |
-| **Export**    | Convert to 17 deployment formats                    |
+| Stage         | Description                                                                |
+| ------------- | -------------------------------------------------------------------------- |
+| **Project**   | Create a workspace to organize related models                              |
+| **Configure** | Select [dataset](../data/datasets.md), base model, and training parameters |
+| **Train**     | Run on cloud GPUs or your local hardware                                   |
+| **Monitor**   | View real-time loss curves and metrics                                     |
+| **Export**    | Convert to 22 deployment formats ([details](models.md#supported-formats))  |
 
 ## Training Options
 
 Ultralytics Platform supports multiple training approaches:
 
-| Method              | Description                                | Best For                   |
-| ------------------- | ------------------------------------------ | -------------------------- |
-| **Cloud Training**  | Train on Platform cloud GPUs               | No local GPU, scalability  |
-| **Remote Training** | Train locally, stream metrics to Platform  | Existing hardware, privacy |
-| **Colab Training**  | Use Google Colab with Platform integration | Free GPU access            |
+| Method                                                  | Description                                   | Best For                   |
+| ------------------------------------------------------- | --------------------------------------------- | -------------------------- |
+| **[Cloud Training](cloud-training.md)**                 | Train on Ultralytics Cloud GPUs               | No local GPU, scalability  |
+| **[Local Training](cloud-training.md#remote-training)** | Train locally, stream metrics to the platform | Existing hardware, privacy |
+| **[Colab Training](cloud-training.md#remote-training)** | Use Google Colab with platform integration    | Free GPU access            |
+
+!!! tip "Automatic GPU Routing"
+
+    When you select a GPU cheaper than the RTX PRO 6000 and Ultralytics-managed capacity is free, the Platform runs
+    your job on an RTX PRO 6000 while still billing your selected GPU's hourly rate. Runs can finish sooner and cost
+    less than they would have on the selected GPU — the upgrade never adds time or cost.
 
 ## GPU Options
 
-Available GPUs for cloud training:
+Available GPUs for cloud training on Ultralytics Cloud:
 
-| Tier       | GPU          | VRAM   | Cost/Hour | Best For                   |
-| ---------- | ------------ | ------ | --------- | -------------------------- |
-| Budget     | RTX A2000    | 6 GB   | $0.12     | Small datasets, testing    |
-| Budget     | RTX 3080     | 10 GB  | $0.25     | Medium datasets            |
-| Budget     | RTX 3080 Ti  | 12 GB  | $0.30     | Medium datasets            |
-| Budget     | A30          | 24 GB  | $0.44     | Larger batch sizes         |
-| Mid        | L4           | 24 GB  | $0.54     | Inference optimized        |
-| Mid        | RTX 4090     | 24 GB  | $0.60     | Great price/performance    |
-| Mid        | A6000        | 48 GB  | $0.90     | Large models               |
-| Mid        | L40S         | 48 GB  | $1.72     | Large batch training       |
-| Pro        | A100 40GB    | 40 GB  | $2.78     | Production training        |
-| Pro        | A100 80GB    | 80 GB  | $3.44     | Very large models          |
-| Pro        | RTX PRO 6000 | 48 GB  | $3.68     | Ultralytics infrastructure |
-| Pro        | H100         | 80 GB  | $5.38     | Fastest training           |
-| Enterprise | H200         | 141 GB | $5.38     | Maximum performance        |
-| Enterprise | B200         | 192 GB | $10.38    | Largest models             |
+{% include "macros/platform-gpu-table.md" %}
+
+!!! info "GPU Tier Access"
+
+    B200 and B300 GPUs require a [Pro or Enterprise plan](../account/billing.md#plans). All other GPUs are available on all plans including Free.
 
 !!! tip "Signup Credits"
 
@@ -80,18 +83,60 @@ Available GPUs for cloud training:
 
 ## Real-Time Metrics
 
-During training, view live metrics:
+On the model's **Train** tab, view live metrics and available validation results:
 
-- **Loss Curves**: Box, class, and DFL loss
-- **Performance**: mAP50, mAP50-95, precision, recall
-- **System Stats**: GPU utilization, memory usage
-- **Checkpoints**: Automatic saving of best weights
+| Subtab         | Metrics                                                                                                                |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Metrics**    | Task metrics (mAP<sub>50</sub>, mAP<sub>50-95</sub>, precision, recall for detection), train/val losses, learning rate |
+| **Validation** | Recorded validation plots and per-image analysis, when available                                                       |
+| **Console**    | Live training logs with ANSI color and automatic error detection                                                       |
+| **System**     | GPU utilization, GPU memory and temperature, CPU, RAM, network and disk I/O                                            |
+
+!!! info "Automatic Checkpoints"
+
+    The best checkpoint (`best.pt`, the highest-fitness epoch) is uploaded to the Platform periodically **while
+    training runs** and again when the run ends, so download, export, and deployment always use the best epoch
+    produced so far. Cancelled runs keep the last checkpoint that finished uploading.
+
+## Quick Start
+
+Get started with cloud training in under a minute:
+
+=== "Cloud (UI)"
+
+    1. Create a project in the sidebar
+    2. Click **New Model**
+    3. Select a model, dataset, and GPU
+    4. Click **Start Training**
+
+=== "Remote (CLI)"
+
+    ```bash
+    export ULTRALYTICS_API_KEY="YOUR_API_KEY"
+    yolo train model=yolo26n.pt data=ul://username/datasets/my-dataset \
+      epochs=100 project=username/my-project name=exp1
+    ```
+
+=== "Remote (Python)"
+
+    ```python
+    from ultralytics import YOLO
+
+    model = YOLO("yolo26n.pt")
+    model.train(
+        data="ul://username/datasets/my-dataset",
+        epochs=100,
+        project="username/my-project",
+        name="exp1",
+    )
+    ```
 
 ## Quick Links
 
 - [**Projects**](projects.md): Organize your models and experiments
 - [**Models**](models.md): Manage trained checkpoints
 - [**Cloud Training**](cloud-training.md): Train on cloud GPUs
+- [**AutoTrain**](autotrain.md): Use Ask AI to run experiments and compare models
 
 ## FAQ
 
@@ -104,25 +149,29 @@ Training time depends on:
 - Number of epochs
 - GPU type selected
 
-A typical training run with 1000 images, YOLO26n, 100 epochs on RTX 4090 takes about 30-60 minutes.
+The current estimator predicts about 6 minutes for 1000 images, YOLO26n, 100 epochs on RTX PRO 6000, and about 2
+minutes for 500 images, YOLO26n, 50 epochs on RTX 4090. Actual duration varies; use the live estimate in the training
+dialog for the selected dataset and configuration. See [cost examples](cloud-training.md#cost-examples).
 
 ### Can I train multiple models simultaneously?
 
-Cloud training currently supports one concurrent training job per account. For parallel training, use remote training from multiple machines.
+Yes. Concurrent cloud training limits depend on your plan: Free allows 3, Pro allows 10, and Enterprise is unlimited. For additional parallel training, use remote training from multiple machines.
 
 ### What happens if training fails?
 
 If training fails:
 
-1. Checkpoints are saved at each epoch
-2. You can resume from the last checkpoint
-3. Credits are only charged for completed compute time
+1. The model is marked failed and the compute instance is terminated
+2. The model page shows an error banner with the captured error, a link to the console output, and **Diagnose with
+   AI** and a **Retry Training** action (Editor role or higher) that reopens the training dialog with the same
+   configuration
+3. A run that stops reporting activity for 4 hours is automatically marked failed and its compute released
+4. If cloud compute had started, elapsed GPU time is charged; failures before compute starts have no GPU usage charge
 
 ### How do I choose the right GPU?
 
-| Scenario                            | Recommended GPU   |
-| ----------------------------------- | ----------------- |
-| Small datasets (<5000 images)       | RTX 4090          |
-| Medium datasets (5000-50000 images) | A100 40GB         |
-| Large datasets or batch sizes       | A100 80GB or H100 |
-| Budget-conscious                    | RTX 3090          |
+| Scenario                      | Recommended GPU  |
+| ----------------------------- | ---------------- |
+| Most training jobs            | RTX PRO 6000     |
+| Large datasets or batch sizes | H100 SXM or H200 |
+| Budget-conscious              | RTX 4090         |

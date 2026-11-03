@@ -16,7 +16,6 @@ class DistanceCalculation(BaseSolution):
     them in a video stream using YOLO object detection and tracking.
 
     Attributes:
-        left_mouse_count (int): Counter for left mouse button clicks.
         selected_boxes (dict[int, Any]): Dictionary to store selected bounding boxes keyed by track ID.
         centroids (list[list[int]]): List to store centroids of selected bounding boxes.
 
@@ -36,13 +35,14 @@ class DistanceCalculation(BaseSolution):
         """Initialize the DistanceCalculation class for measuring object distances in video streams."""
         super().__init__(**kwargs)
 
-        # Mouse event information
-        self.left_mouse_count = 0
         self.selected_boxes: dict[int, list[float]] = {}
         self.centroids: list[list[int]] = []  # Store centroids of selected objects
 
     def mouse_event_for_distance(self, event: int, x: int, y: int, flags: int, param: Any) -> None:
-        """Handle mouse events to select regions in a real-time video stream for distance calculation.
+        """Handle mouse events to select objects in a real-time video stream for distance calculation.
+
+        A left click selects the tracked object under the cursor (up to two objects); a right click clears the
+        selection.
 
         Args:
             event (int): Type of mouse event (e.g., cv2.EVENT_MOUSEMOVE, cv2.EVENT_LBUTTONDOWN).
@@ -56,15 +56,21 @@ class DistanceCalculation(BaseSolution):
             >>> cv2.setMouseCallback("window_name", dc.mouse_event_for_distance)
         """
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.left_mouse_count += 1
-            if self.left_mouse_count <= 2:
+            if len(self.selected_boxes) < 2:
                 for box, track_id in zip(self.boxes, self.track_ids):
-                    if box[0] < x < box[2] and box[1] < y < box[3] and track_id not in self.selected_boxes:
+                    x0, y0, x1, y1 = self.get_enclosing_box(box)
+                    if x0 < x < x1 and y0 < y < y1 and track_id not in self.selected_boxes:
                         self.selected_boxes[track_id] = box
+                        break  # one object per click, even where boxes overlap
 
         elif event == cv2.EVENT_RBUTTONDOWN:
             self.selected_boxes = {}
-            self.left_mouse_count = 0
+
+    def forget_tracks(self, track_ids):
+        """Drop retired IDs from `selected_boxes` so a vanished object can't freeze the distance."""
+        super().forget_tracks(track_ids)
+        for track_id in track_ids:
+            self.selected_boxes.pop(track_id, None)
 
     def process(self, im0) -> SolutionResults:
         """Process a video frame and calculate the distance between two selected bounding boxes.
@@ -98,14 +104,17 @@ class DistanceCalculation(BaseSolution):
 
             # Update selected boxes if they're being tracked
             if len(self.selected_boxes) == 2:
-                for trk_id in self.selected_boxes.keys():
+                for trk_id in self.selected_boxes:
                     if trk_id == track_id:
                         self.selected_boxes[track_id] = box
 
         if len(self.selected_boxes) == 2:
             # Calculate centroids of selected boxes
             self.centroids.extend(
-                [[int((box[0] + box[2]) // 2), int((box[1] + box[3]) // 2)] for box in self.selected_boxes.values()]
+                [
+                    [int((box[0] + box[2]) // 2), int((box[1] + box[3]) // 2)]
+                    for box in map(self.get_enclosing_box, self.selected_boxes.values())
+                ]
             )
             # Calculate Euclidean distance between centroids
             pixels_distance = math.sqrt(

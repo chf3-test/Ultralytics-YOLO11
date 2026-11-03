@@ -6,10 +6,10 @@ from abc import abstractmethod
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from PIL import Image
+from torch import nn
 
-from ultralytics.utils import checks
+from ultralytics.utils import WEIGHTS_DIR, checks
 from ultralytics.utils.torch_utils import smart_inference_mode
 
 try:
@@ -37,12 +37,10 @@ class TextModel(nn.Module):
     @abstractmethod
     def tokenize(self, texts):
         """Convert input texts to tokens for model processing."""
-        pass
 
     @abstractmethod
     def encode_text(self, texts, dtype):
         """Encode tokenized texts into normalized feature vectors."""
-        pass
 
 
 class CLIP(TextModel):
@@ -53,6 +51,7 @@ class CLIP(TextModel):
 
     Attributes:
         model (clip.model.CLIP): The loaded CLIP model.
+        image_preprocess (callable): Preprocessing transform for images.
         device (torch.device): Device where the model is loaded.
 
     Methods:
@@ -79,7 +78,7 @@ class CLIP(TextModel):
             device (torch.device): Device to load the model on.
         """
         super().__init__()
-        self.model, self.image_preprocess = clip.load(size, device=device)
+        self.model, self.image_preprocess = clip.load(size, device=device, download_root=str(WEIGHTS_DIR / "clip"))
         self.to(device)
         self.device = device
         self.eval()
@@ -131,14 +130,14 @@ class CLIP(TextModel):
 
     @smart_inference_mode()
     def encode_image(self, image: Image.Image | torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
-        """Encode preprocessed images into normalized feature vectors.
+        """Encode images into normalized feature vectors.
 
-        This method processes preprocessed image inputs through the CLIP model to generate feature vectors, which are
-        then normalized to unit length. These normalized vectors can be used for text-image similarity comparisons.
+        This method processes image inputs through the CLIP model to generate feature vectors, which are then
+        normalized to unit length. These normalized vectors can be used for text-image similarity comparisons.
 
         Args:
-            image (PIL.Image | torch.Tensor): Preprocessed image input. If a PIL Image is provided, it will be converted
-                to a tensor using the model's image preprocessing function.
+            image (PIL.Image | torch.Tensor): Image input as a PIL Image or preprocessed tensor. If a PIL Image is
+                provided, it will be converted to a tensor using the model's image preprocessing function.
             dtype (torch.dtype, optional): Data type for output features.
 
         Returns:
@@ -334,19 +333,24 @@ class MobileCLIPTS(TextModel):
         return self.encoder(texts).to(dtype)
 
 
-def build_text_model(variant: str, device: torch.device = None) -> TextModel:
+def build_text_model(variant: str, device: torch.device | str | None = None) -> TextModel:
     """Build a text encoding model based on the specified variant.
 
     Args:
-        variant (str): Model variant in format "base:size" (e.g., "clip:ViT-B/32" or "mobileclip:s0").
-        device (torch.device, optional): Device to load the model on.
+        variant (str): Model variant in format "base:size" (e.g., "clip:ViT-B/32" or "mobileclip:blt"). The size is used
+            only for "clip"; "mobileclip" and "mobileclip2" always load their TorchScript text encoders
+            (`mobileclip_blt.ts` and `mobileclip2_b.ts`).
+        device (torch.device | str, optional): Device to load the model on.
 
     Returns:
         (TextModel): Instantiated text encoding model.
 
+    Raises:
+        ValueError: If the variant base is not 'clip', 'mobileclip', or 'mobileclip2'.
+
     Examples:
         >>> model = build_text_model("clip:ViT-B/32", device=torch.device("cuda"))
-        >>> model = build_text_model("mobileclip:s0", device=torch.device("cpu"))
+        >>> model = build_text_model("mobileclip:blt", device=torch.device("cpu"))
     """
     base, size = variant.split(":")
     if base == "clip":
@@ -356,4 +360,4 @@ def build_text_model(variant: str, device: torch.device = None) -> TextModel:
     elif base == "mobileclip2":
         return MobileCLIPTS(device, weight="mobileclip2_b.ts")
     else:
-        raise ValueError(f"Unrecognized base model: '{base}'. Supported base models: 'clip', 'mobileclip'.")
+        raise ValueError(f"Unrecognized base model '{base}'. Supported models are 'clip', 'mobileclip', 'mobileclip2'.")

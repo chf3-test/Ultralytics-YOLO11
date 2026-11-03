@@ -18,7 +18,7 @@ class TrackZone(BaseSolution):
     Attributes:
         region (np.ndarray): The polygonal region for tracking, represented as a convex hull of points.
         line_width (int): Width of the lines used for drawing bounding boxes and region boundaries.
-        names (list[str]): List of class names that the model can detect.
+        names (dict[int, str]): Dictionary mapping class indices to class names.
         boxes (list[np.ndarray]): Bounding boxes of tracked objects.
         track_ids (list[int]): Unique identifiers for each tracked object.
         clss (list[int]): Class indices of tracked objects.
@@ -67,13 +67,13 @@ class TrackZone(BaseSolution):
         annotator = SolutionAnnotator(im0, line_width=self.line_width)  # Initialize annotator
 
         if self.mask is None:  # Create a mask for the region
-            self.mask = np.zeros_like(im0[:, :, 0])
+            self.mask = np.zeros(im0.shape[:2], dtype=np.uint8)
             cv2.fillPoly(self.mask, [self.region], 255)
         masked_frame = cv2.bitwise_and(im0, im0, mask=self.mask)
         self.extract_tracks(masked_frame)
 
         # Draw the region boundary
-        cv2.polylines(im0, [self.region], isClosed=True, color=(255, 255, 255), thickness=self.line_width * 2)
+        cv2.polylines(annotator.im, [self.region], isClosed=True, color=(255, 255, 255), thickness=self.line_width * 2)
 
         # Iterate over boxes, track ids, classes indexes list and draw bounding boxes
         for box, track_id, cls, conf in zip(self.boxes, self.track_ids, self.clss, self.confs):

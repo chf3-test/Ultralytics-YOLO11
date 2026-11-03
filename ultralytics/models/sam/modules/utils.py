@@ -70,7 +70,7 @@ def get_1d_sine_pe(pos_inds: torch.Tensor, dim: int, temperature: float = 10000)
         temperature (float, optional): Scaling factor for the frequency of the sinusoidal functions.
 
     Returns:
-        (torch.Tensor): Sinusoidal positional embeddings with shape (pos_inds.shape, dim).
+        (torch.Tensor): Sinusoidal positional embeddings with shape (*pos_inds.shape, dim).
 
     Examples:
         >>> pos = torch.tensor([0, 1, 2, 3])
@@ -90,7 +90,7 @@ def get_1d_sine_pe(pos_inds: torch.Tensor, dim: int, temperature: float = 10000)
 def init_t_xy(end_x: int, end_y: int, scale: float = 1.0, offset: int = 0):
     """Initialize 1D and 2D coordinate tensors for a grid of specified dimensions.
 
-    This function creates coordinate tensors for a grid with dimensions end_x × end_y. It generates a linear index
+    This function creates coordinate tensors for a grid with dimensions end_x x end_y. It generates a linear index
     tensor and corresponding x and y coordinate tensors.
 
     Args:
@@ -276,7 +276,7 @@ def window_unpartition(windows: torch.Tensor, window_size: int, pad_hw: tuple[in
         >>> hw = (15, 14)  # Original height and width
         >>> x = window_unpartition(windows, window_size=8, pad_hw=pad_hw, hw=hw)
         >>> print(x.shape)
-        torch.Size([1, 15, 14, 64])
+        torch.Size([8, 15, 14, 64])
     """
     Hp, Wp = pad_hw
     H, W = hw
@@ -339,7 +339,7 @@ def add_decomposed_rel_pos(
 ) -> torch.Tensor:
     """Add decomposed Relative Positional Embeddings to the attention map.
 
-    This function calculates and applies decomposed Relative Positional Embeddings as described in the MVITv2
+    This function calculates and applies decomposed Relative Positional Embeddings as described in the MViTv2
     paper. It enhances the attention mechanism by incorporating spatial relationships between query and key
     positions.
 
@@ -393,19 +393,18 @@ def get_abs_pos(
     retain_cls_token: bool = False,
     tiling: bool = False,
 ) -> torch.Tensor:
-    """Calculate absolute positional embeddings. If needed, resize embeddings and remove cls_token dimension for the
-    original embeddings.
+    """Calculate absolute positional embeddings, resizing them and removing the cls_token dimension if needed.
 
     Args:
-        abs_pos (Tensor): absolute positional embeddings with (1, num_position, C).
+        abs_pos (torch.Tensor): Absolute positional embeddings with shape (1, num_position, C).
         has_cls_token (bool): If true, has 1 embedding in abs_pos for cls token.
-        hw (Tuple): size of input image tokens.
-        retain_cls_token: whether to retain the cls_token
-        tiling: whether to tile the embeddings, *instead* of interpolation (a la abs_win)
+        hw (tuple[int, int]): Size of input image tokens.
+        retain_cls_token (bool): Whether to retain the cls_token.
+        tiling (bool): Whether to tile the embeddings, *instead* of interpolation (a la abs_win).
 
     Returns:
-        Absolute positional embeddings after processing with shape (1, H, W, C),: if retain_cls_token is False,
-            otherwise (1, 1+H*W, C).
+        (torch.Tensor): Absolute positional embeddings after processing with shape (1, H, W, C) if retain_cls_token is
+            False, otherwise (1, 1+H*W, C).
     """
     if retain_cls_token:
         assert has_cls_token
@@ -459,23 +458,23 @@ def concat_rel_pos(
     rel_pos_h: torch.Tensor,
     rel_pos_w: torch.Tensor,
     rescale: bool = False,
-    relative_coords: torch.Tensor = None,
+    relative_coords: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Concatenate rel pos coeffs to the q & k tensors, so that qk^T is now effectively including rel pos biases.
 
     Args:
-        q (torch.Tensor): q tensor with shape (B, L_q, C).
-        k (torch.Tensor): k tensor with shape (B, L_k, C).
-        q_hw: These are spatial size of q tensors.
-        k_hw: These are spatial size of k tensors.
-        rel_pos_h: These are relative pos embeddings/params of height.
-        rel_pos_w: These are relative pos embeddings/params of width.
-        rescale (bool): whether to rescale. e.g. for use when using sdpa, pytorch will scale by the wrong factor due to
-            the concat.
-        relative_coords (torch.Tensor, optional): Precomputed relative coords index tensor.
+        q (torch.Tensor): Query tensor with shape (B, L_q, C).
+        k (torch.Tensor): Key tensor with shape (B, L_k, C).
+        q_hw (tuple[int, int]): Spatial size of query tensors as (height, width).
+        k_hw (tuple[int, int]): Spatial size of key tensors as (height, width).
+        rel_pos_h (torch.Tensor): Relative positional embeddings for the height axis.
+        rel_pos_w (torch.Tensor): Relative positional embeddings for the width axis.
+        rescale (bool): Whether to rescale for use with SDPA, which would scale by the wrong factor due to the concat.
+        relative_coords (torch.Tensor | None): Precomputed relative coords index tensor.
 
     Returns:
-        q, k: But, padded so that qk^T accounts for rel pos biases.
+        q (torch.Tensor): Query tensor padded so that qk^T accounts for relative position biases.
+        k (torch.Tensor): Key tensor padded so that qk^T accounts for relative position biases.
     """
     q_h, q_w = q_hw
     k_h, k_w = k_hw

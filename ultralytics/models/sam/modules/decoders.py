@@ -52,7 +52,7 @@ class MaskDecoder(nn.Module):
             transformer_dim (int): Channel dimension for the transformer module.
             transformer (nn.Module): Transformer module used for mask prediction.
             num_multimask_outputs (int): Number of masks to predict for disambiguating masks.
-            activation (Type[nn.Module]): Type of activation to use when upscaling masks.
+            activation (type[nn.Module]): Type of activation to use when upscaling masks.
             iou_head_depth (int): Depth of the MLP used to predict mask quality.
             iou_head_hidden_dim (int): Hidden dimension of the MLP used to predict mask quality.
         """
@@ -233,7 +233,7 @@ class SAM2MaskDecoder(nn.Module):
             transformer_dim (int): Channel dimension of the transformer.
             transformer (nn.Module): Transformer used to predict masks.
             num_multimask_outputs (int): Number of masks to predict when disambiguating masks.
-            activation (Type[nn.Module]): Type of activation to use when upscaling masks.
+            activation (type[nn.Module]): Type of activation to use when upscaling masks.
             iou_head_depth (int): Depth of the MLP used to predict mask quality.
             iou_head_hidden_dim (int): Hidden dimension of the MLP used to predict mask quality.
             use_high_res_features (bool): Whether to use high-resolution features.
@@ -316,9 +316,10 @@ class SAM2MaskDecoder(nn.Module):
             high_res_features (list[torch.Tensor] | None, optional): Optional high-resolution features.
 
         Returns:
-            masks (torch.Tensor): Batched predicted masks with shape (B, N, H, W).
+            masks (torch.Tensor): Batched predicted mask logits with shape (B, N, 4*H, 4*W).
             iou_pred (torch.Tensor): Batched predictions of mask quality with shape (B, N).
-            sam_tokens_out (torch.Tensor): Batched SAM token for mask output with shape (B, N, C).
+            sam_tokens_out (torch.Tensor): Batched SAM output tokens used as object pointers with shape (B, 1, C), or
+                (B, 3, C) when multimask_output and use_multimask_token_for_obj_ptr are True.
             object_score_logits (torch.Tensor): Batched object score logits with shape (B, 1).
 
         Examples:

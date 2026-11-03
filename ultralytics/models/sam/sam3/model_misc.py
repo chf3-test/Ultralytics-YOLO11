@@ -14,7 +14,7 @@ from torch import Tensor, nn
 
 
 class DotProductScoring(torch.nn.Module):
-    """A module that computes dot-product scores between a set of query features and a."""
+    """A module that computes dot-product scores between query features and pooled prompt embeddings."""
 
     def __init__(
         self,
@@ -43,7 +43,7 @@ class DotProductScoring(torch.nn.Module):
         is_valid = (~prompt_mask).to(prompt.dtype).permute(1, 0)[..., None]
         # num_valid has shape (bs, 1)
         num_valid = torch.clamp(torch.sum(is_valid, dim=0), min=1.0)
-        # mean pool over all the valid tokens -- pooled_prompt has shape (bs, proj_dim)
+        # mean pool over all the valid tokens -- pooled_prompt has shape (bs, d_model)
         pooled_prompt = (prompt * is_valid).sum(dim=0) / num_valid
         return pooled_prompt
 
@@ -51,7 +51,7 @@ class DotProductScoring(torch.nn.Module):
         """Compute dot-product scores between hs and prompt."""
         # hs has shape (num_layer, bs, num_query, d_model)
         # prompt has shape (seq, bs, d_model)
-        # prompt_mask has shape (bs, seq), where 1 is valid and 0 is padding
+        # prompt_mask has shape (bs, seq), where 1 is padding and 0 is valid
         assert hs.dim() == 4 and prompt.dim() == 3 and prompt_mask.dim() == 2
 
         # apply MLP on prompt if specified
@@ -77,7 +77,7 @@ class DotProductScoring(torch.nn.Module):
 
 
 class LayerScale(nn.Module):
-    """LayerScale module as introduced in "Meta Pseudo Labels" and used in."""
+    """LayerScale module for per-channel scaling of layer outputs."""
 
     def __init__(
         self,
@@ -123,13 +123,12 @@ class TransformerWrapper(nn.Module):
     def _reset_parameters(self):
         """Initialize the parameters of the model."""
         for n, p in self.named_parameters():
-            if p.dim() > 1:
-                if "box_embed" not in n and "query_embed" not in n and "reference_points" not in n:
-                    nn.init.xavier_uniform_(p)
+            if p.dim() > 1 and "box_embed" not in n and "query_embed" not in n and "reference_points" not in n:
+                nn.init.xavier_uniform_(p)
 
 
 def get_valid_ratio(mask):
-    """Compute the valid ratio of height and width from the mask."""
+    """Compute the valid (unpadded) ratios of width and height from a (B, H, W) padding mask, returned as (B, 2)."""
     _, H, W = mask.shape
     valid_H = torch.sum(~mask[:, :, 0], 1)
     valid_W = torch.sum(~mask[:, 0, :], 1)

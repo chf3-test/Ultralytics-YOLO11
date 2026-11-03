@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -18,26 +17,23 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # Avoid OpenMP conflict on some sys
 
 
 class VisualAISearch:
-    """A semantic image search system that leverages OpenCLIP for generating high-quality image and text embeddings and
-    FAISS for fast similarity-based retrieval.
+    """A semantic image search system using CLIP embeddings and cosine similarity for image retrieval.
 
-    This class aligns image and text embeddings in a shared semantic space, enabling users to search large collections
-    of images using natural language queries with high accuracy and speed.
+    This class leverages OpenAI's CLIP for generating image and text embeddings and NumPy cosine similarity for fast
+    similarity-based retrieval. It aligns image and text embeddings in a shared semantic space, enabling users to search
+    large collections of images using natural language queries with high accuracy and speed.
 
     Attributes:
-        data (str): Directory containing images.
-        device (str): Computation device, e.g., 'cpu' or 'cuda'.
-        faiss_index (str): Path to the FAISS index file.
-        data_path_npy (str): Path to the numpy file storing image paths.
-        data_dir (Path): Path object for the data directory.
+        device (torch.device): Computation device selected from the `device` argument.
+        data_dir (Path): Path object for the image directory.
         model: Loaded CLIP model.
-        index: FAISS index for similarity search.
-        image_paths (list[str]): List of image file paths.
+        index (np.ndarray): L2-normalized image embeddings used for cosine similarity search.
+        image_paths (list[str]): Image file names, aligned with the rows of `index`.
 
     Methods:
         extract_image_feature: Extract CLIP embedding from an image.
         extract_text_feature: Extract CLIP embedding from text.
-        load_or_build_index: Load existing FAISS index or build new one.
+        load_or_build_index: Build the embedding index from the images in the data directory.
         search: Perform semantic search for similar images.
 
     Examples:
@@ -46,18 +42,21 @@ class VisualAISearch:
         >>> results = searcher.search("a cat sitting on a chair", k=10)
     """
 
-    def __init__(self, **kwargs: Any) -> None:
-        """Initialize the VisualAISearch class with FAISS index and CLIP model."""
+    def __init__(self, data: str = "images", device: str | None = "cpu") -> None:
+        """Initialize the VisualAISearch class with the embedding index and CLIP model.
+
+        Args:
+            data (str): Image directory to index and search, downloaded from Ultralytics assets if missing.
+            device (str | None): Device used for CLIP inference (e.g. 'cpu', 'cuda', '0'), or None to auto-select.
+
+        Raises:
+            AssertionError: If the installed torch version is older than 2.4.
+        """
         assert TORCH_2_4, f"VisualAISearch requires torch>=2.4 (found torch=={TORCH_VERSION})"
         from ultralytics.nn.text_model import build_text_model
 
-        check_requirements("faiss-cpu")
-
-        self.faiss = __import__("faiss")
-        self.faiss_index = "faiss.index"
-        self.data_path_npy = "paths.npy"
-        self.data_dir = Path(kwargs.get("data", "images"))
-        self.device = select_device(kwargs.get("device", "cpu"))
+        self.data_dir = Path(data)
+        self.device = select_device(device)
 
         if not self.data_dir.exists():
             from ultralytics.utils import ASSETS_URL
@@ -69,37 +68,39 @@ class VisualAISearch:
             self.data_dir = Path("images")
 
         self.model = build_text_model("clip:ViT-B/32", device=self.device)
-
-        self.index = None
-        self.image_paths = []
-
         self.load_or_build_index()
 
     def extract_image_feature(self, path: Path) -> np.ndarray:
-        """Extract CLIP image embedding from the given image path."""
+        """Extract CLIP image embedding with shape (1, D) from the given image path."""
         return self.model.encode_image(Image.open(path)).detach().cpu().numpy()
 
     def extract_text_feature(self, text: str) -> np.ndarray:
-        """Extract CLIP text embedding from the given text query."""
+        """Extract CLIP text embedding with shape (1, D) from the given text query."""
         return self.model.encode_text(self.model.tokenize([text])).detach().cpu().numpy()
 
-    def load_or_build_index(self) -> None:
-        """Load existing FAISS index or build a new one from image features.
+    @staticmethod
+    def _normalize(x: np.ndarray) -> np.ndarray:
+        """L2-normalize each row of `x` so inner products equal cosine similarity.
 
-        Checks if FAISS index and image paths exist on disk. If found, loads them directly. Otherwise, builds a new
-        index by extracting features from all images in the data directory, normalizes the features, and saves both the
-        index and image paths for future use.
+        Args:
+            x (np.ndarray): Feature array of shape (N, D).
+
+        Returns:
+            (np.ndarray): Row-wise L2-normalized array with the same shape as the input.
         """
-        # Check if the FAISS index and corresponding image paths already exist
-        if Path(self.faiss_index).exists() and Path(self.data_path_npy).exists():
-            LOGGER.info("Loading existing FAISS index...")
-            self.index = self.faiss.read_index(self.faiss_index)  # Load the FAISS index from disk
-            self.image_paths = np.load(self.data_path_npy)  # Load the saved image path list
-            return  # Exit the function as the index is successfully loaded
+        return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
 
-        # If the index doesn't exist, start building it from scratch
-        LOGGER.info("Building FAISS index from images...")
+    def load_or_build_index(self) -> None:
+        """Build the image embedding index from the image directory.
+
+        Extracts CLIP features from all images in the data directory and L2-normalizes them.
+
+        Raises:
+            RuntimeError: If no image embeddings could be generated from the data directory.
+        """
+        LOGGER.info("Building embeddings from images...")
         vectors = []  # List to store feature vectors of images
+        self.image_paths = []
 
         # Iterate over all image files in the data directory
         for file in self.data_dir.iterdir():
@@ -118,12 +119,7 @@ class VisualAISearch:
             raise RuntimeError("No image embeddings could be generated.")
 
         vectors = np.vstack(vectors).astype("float32")  # Stack all vectors into a NumPy array and convert to float32
-        self.faiss.normalize_L2(vectors)  # Normalize vectors to unit length for cosine similarity
-
-        self.index = self.faiss.IndexFlatIP(vectors.shape[1])  # Create a new FAISS index using inner product
-        self.index.add(vectors)  # Add the normalized vectors to the FAISS index
-        self.faiss.write_index(self.index, self.faiss_index)  # Save the newly built FAISS index to disk
-        np.save(self.data_path_npy, np.array(self.image_paths))  # Save the list of image paths to disk
+        self.index = self._normalize(vectors)  # L2-normalize so inner product equals cosine similarity
 
         LOGGER.info(f"Indexed {len(self.image_paths)} images.")
 
@@ -136,20 +132,17 @@ class VisualAISearch:
             similarity_thresh (float, optional): Minimum similarity threshold for filtering results.
 
         Returns:
-            (list[str]): List of image filenames ranked by similarity score.
+            (list[str]): Image filenames with similarity >= `similarity_thresh`, ranked by descending similarity.
 
         Examples:
             Search for images matching a query
             >>> searcher = VisualAISearch(data="images")
             >>> results = searcher.search("red car", k=5, similarity_thresh=0.2)
         """
-        text_feat = self.extract_text_feature(query).astype("float32")
-        self.faiss.normalize_L2(text_feat)
-
-        D, index = self.index.search(text_feat, k)
-        results = [
-            (self.image_paths[i], float(D[0][idx])) for idx, i in enumerate(index[0]) if D[0][idx] >= similarity_thresh
-        ]
+        text_feat = self._normalize(self.extract_text_feature(query).astype("float32"))
+        scores = self.index @ text_feat[0]  # cosine similarity (embeddings are L2-normalized)
+        top_k = np.argsort(scores)[::-1][: max(k, 0)]
+        results = [(self.image_paths[i], float(scores[i])) for i in top_k if scores[i] >= similarity_thresh]
         results.sort(key=lambda x: x[1], reverse=True)
 
         LOGGER.info("\nRanked Results:")
@@ -159,7 +152,7 @@ class VisualAISearch:
         return [r[0] for r in results]
 
     def __call__(self, query: str) -> list[str]:
-        """Direct call interface for the search function."""
+        """Search for images matching `query` using the default `search` arguments."""
         return self.search(query)
 
 
@@ -189,8 +182,8 @@ class SearchApp:
         """Initialize the SearchApp with VisualAISearch backend.
 
         Args:
-            data (str, optional): Path to directory containing images to index and search.
-            device (str, optional): Device to run inference on (e.g. 'cpu', 'cuda').
+            data (str): Path to directory containing images to index and search.
+            device (str | None): Device used for CLIP inference (e.g. 'cpu', 'cuda', '0'), or None to auto-select.
         """
         check_requirements("flask>=3.0.1")
         from flask import Flask, render_template, request
@@ -201,7 +194,7 @@ class SearchApp:
         self.app = Flask(
             __name__,
             template_folder="templates",
-            static_folder=Path(data).resolve(),  # Absolute path to serve images
+            static_folder=self.searcher.data_dir.resolve(),  # Absolute path to serve images
             static_url_path="/images",  # URL prefix for images
         )
         self.app.add_url_rule("/", view_func=self.index, methods=["GET", "POST"])

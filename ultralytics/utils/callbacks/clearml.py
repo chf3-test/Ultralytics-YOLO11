@@ -1,10 +1,13 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
-from ultralytics.utils import LOGGER, SETTINGS, TESTS_RUNNING
+from __future__ import annotations
+
+from pathlib import Path
+
+from ultralytics.utils import LOGGER, TESTS_RUNNING
 
 try:
     assert not TESTS_RUNNING  # do not log pytest
-    assert SETTINGS["clearml"] is True  # verify integration is enabled
     import clearml
     from clearml import Task
 
@@ -18,7 +21,7 @@ def _log_debug_samples(files, title: str = "Debug Samples") -> None:
     """Log files (images) as debug samples in the ClearML task.
 
     Args:
-        files (list[Path]): A list of file paths in PosixPath format.
+        files (list[Path]): A list of image file paths.
         title (str): A title that groups together images with the same values.
     """
     import re
@@ -27,18 +30,20 @@ def _log_debug_samples(files, title: str = "Debug Samples") -> None:
         for f in files:
             if f.exists():
                 it = re.search(r"_batch(\d+)", f.name)
-                iteration = int(it.groups()[0]) if it else 0
                 task.get_logger().report_image(
-                    title=title, series=f.name.replace(it.group(), ""), local_path=str(f), iteration=iteration
+                    title=title,
+                    series=f.name.replace(it.group(), "") if it else f.name,
+                    local_path=str(f),
+                    iteration=int(it.group(1)) if it else 0,
                 )
 
 
-def _log_plot(title: str, plot_path: str) -> None:
+def _log_plot(title: str, plot_path: str | Path) -> None:
     """Log an image as a plot in the plot section of ClearML.
 
     Args:
         title (str): The title of the plot.
-        plot_path (str): The path to the saved image file.
+        plot_path (str | Path): The path to the saved image file.
     """
     import matplotlib.image as mpimg
     import matplotlib.pyplot as plt
@@ -66,7 +71,7 @@ def on_pretrain_routine_start(trainer) -> None:
             PatchedMatplotlib.update_current_task(None)
         else:
             task = Task.init(
-                project_name=trainer.args.project or "Ultralytics",
+                project_name=str(trainer.args.project or "Ultralytics").lstrip("/") or "Ultralytics",
                 task_name=trainer.args.name,
                 tags=["Ultralytics"],
                 output_uri=True,
@@ -77,7 +82,7 @@ def on_pretrain_routine_start(trainer) -> None:
                 "ClearML Initialized a new task. If you want to run remotely, "
                 "please add clearml-init and connect your arguments before initializing YOLO."
             )
-        task.connect(vars(trainer.args), name="General")
+        task.connect(vars(trainer.args), name="General", ignore_remote_overrides=True)
     except Exception as e:
         LOGGER.warning(f"ClearML installed but not initialized correctly, not logging this run. {e}")
 

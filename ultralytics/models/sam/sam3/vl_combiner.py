@@ -9,17 +9,17 @@ from __future__ import annotations
 from copy import copy
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .necks import Sam3DualViTDetNeck
 
 
 class SAM3VLBackbone(nn.Module):
-    """This backbone combines a vision backbone and a language backbone without fusion. As such it is more of a
-    convenience wrapper to handle the two backbones together.
+    """Vision-language backbone that combines a vision backbone and a language backbone without fusion.
 
-    It adds support for activation checkpointing and compilation.
+    As such it is more of a convenience wrapper to handle the two backbones together. It adds support for activation
+    checkpointing and compilation.
     """
 
     def __init__(
@@ -33,8 +33,13 @@ class SAM3VLBackbone(nn.Module):
     ):
         """Initialize the backbone combiner.
 
-        :param visual: The vision backbone to use
-        :param text: The text encoder to use
+        Args:
+            visual (Sam3DualViTDetNeck): The vision backbone to use.
+            text (nn.Module): The text encoder to use.
+            compile_visual (bool): Whether to `torch.compile` the vision backbone.
+            act_ckpt_whole_vision_backbone (bool): Whether to checkpoint activations for the whole vision backbone.
+            act_ckpt_whole_language_backbone (bool): Whether to checkpoint activations for the whole language backbone.
+            scalp (int): Number of trailing (lowest-resolution) feature levels to drop from the backbone output.
         """
         super().__init__()
         self.vision_backbone: Sam3DualViTDetNeck = torch.compile(visual) if compile_visual else visual
@@ -48,26 +53,26 @@ class SAM3VLBackbone(nn.Module):
         self,
         samples: torch.Tensor,
         captions: list[str],
-        input_boxes: torch.Tensor = None,
+        input_boxes: torch.Tensor | None = None,
         additional_text: list[str] | None = None,
     ):
         """Forward pass of the backbone combiner.
 
-        :param samples: The input images
-        :param captions: The input captions
-        :param input_boxes: If the text contains place-holders for boxes, this
-            parameter contains the tensor containing their spatial features
-        :param additional_text: This can be used to encode some additional text
-            (different from the captions) in the same forward of the backbone
-        :return: Output dictionary with the following keys:
-            - vision_features: The output of the vision backbone
-            - language_features: The output of the language backbone
-            - language_mask: The attention mask of the language backbone
-            - vision_pos_enc: The positional encoding of the vision backbone
-            - (optional) additional_text_features: The output of the language
-                backbone for the additional text
-            - (optional) additional_text_mask: The attention mask of the
-                language backbone for the additional text
+        Args:
+            samples (torch.Tensor): The input images.
+            captions (list[str]): The input captions.
+            input_boxes (torch.Tensor, optional): When the text contains box place-holders, the tensor containing their
+                spatial features.
+            additional_text (list[str], optional): Extra text (different from the captions) to encode in the same
+                backbone forward pass.
+
+        Returns:
+            (dict): Output dictionary with the following keys: `vision_features` (the lowest-resolution SAM3 feature map
+                kept after scalp), `vision_pos_enc` and `backbone_fpn` (SAM3 positional encodings and multi-level
+                features), `sam2_backbone_out` (the SAM2 neck outputs, or None), `language_features` (the output of the
+                language backbone), `language_mask` (the attention mask of the language backbone), `language_embeds`
+                (the text token embeddings) and, when `additional_text` is provided, `additional_text_features` and
+                `additional_text_mask` (the language backbone output and attention mask for the additional text).
         """
         output = self.forward_image(samples)
         output.update(self.forward_text(captions, input_boxes, additional_text))
@@ -129,7 +134,7 @@ class SAM3VLBackbone(nn.Module):
         }
 
     def forward_text(self, captions, input_boxes=None, additional_text=None):
-        """Forward pass of the text encoder."""
+        """Encode captions (and optional additional text) into language features, masks, and token embeddings."""
         output = {}
 
         # Forward through text_encoder
@@ -155,6 +160,7 @@ class SAM3VLBackbone(nn.Module):
 
         return output
 
-    def set_imgsz(self, imgsz: list[int] = [1008, 1008]):
+    def set_imgsz(self, imgsz: list[int] | None = None):
         """Set the image size for the vision backbone."""
+        imgsz = imgsz if imgsz is not None else [1008, 1008]
         self.vision_backbone.set_imgsz(imgsz)

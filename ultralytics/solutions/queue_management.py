@@ -16,8 +16,8 @@ class QueueManager(BaseSolution):
         counts (int): The current count of objects in the queue.
         rect_color (tuple[int, int, int]): BGR color tuple for drawing the queue region rectangle.
         region_length (int): The number of points defining the queue region.
-        track_line (list[tuple[int, int]]): List of track line coordinates.
-        track_history (dict[int, list[tuple[int, int]]]): Dictionary storing tracking history for each object.
+        track_line (list[tuple[float, float]]): List of track line center-point coordinates.
+        track_history (dict[int, list[tuple[float, float]]]): Dictionary storing tracking history for each object.
 
     Methods:
         initialize_region: Initialize the queue region.
@@ -28,7 +28,7 @@ class QueueManager(BaseSolution):
 
     Examples:
         >>> cap = cv2.VideoCapture("path/to/video.mp4")
-        >>> queue_manager = QueueManager(region=[100, 100, 200, 200, 300, 300])
+        >>> queue_manager = QueueManager(region=[(20, 400), (1080, 400), (1080, 360), (20, 360)])
         >>> while cap.isOpened():
         ...     success, im0 = cap.read()
         ...     if not success:
@@ -51,8 +51,8 @@ class QueueManager(BaseSolution):
             im0 (np.ndarray): Input image for processing, typically a frame from a video stream.
 
         Returns:
-            (SolutionResults): Contains processed image `im0`, 'queue_count' (int, number of objects in the queue) and
-                'total_tracks' (int, total number of tracked objects).
+            (SolutionResults): Contains processed image `plot_im`, 'queue_count' (int, number of objects in the queue)
+                and 'total_tracks' (int, total number of tracked objects).
 
         Examples:
             >>> queue_manager = QueueManager()
@@ -65,7 +65,7 @@ class QueueManager(BaseSolution):
         annotator.draw_region(reg_pts=self.region, color=self.rect_color, thickness=self.line_width * 2)  # Draw region
 
         for box, track_id, cls, conf in zip(self.boxes, self.track_ids, self.clss, self.confs):
-            # Draw bounding box and counting region
+            # Draw bounding box and label
             annotator.box_label(box, label=self.adjust_box_label(cls, conf, track_id), color=colors(track_id, True))
             self.store_tracking_history(track_id, box)  # Store track history
 

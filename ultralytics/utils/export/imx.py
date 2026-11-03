@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import types
 from pathlib import Path
-from shutil import which
+from shutil import rmtree, which
 
 import numpy as np
 import torch
 
 from ultralytics.nn.modules import Detect, Pose, Segment
-from ultralytics.utils import LOGGER, WINDOWS
+from ultralytics.utils import IS_DEBIAN_BOOKWORM, IS_DEBIAN_TRIXIE, IS_RASPBERRYPI, IS_UBUNTU, LOGGER, WINDOWS
+from ultralytics.utils.checks import check_apt_requirements, check_requirements
 from ultralytics.utils.patches import onnx_export_patch
 from ultralytics.utils.tal import make_anchors
 from ultralytics.utils.torch_utils import copy_attr
@@ -67,6 +69,7 @@ class FXModel(torch.nn.Module):
 
     Attributes:
         model (nn.Module): The original model's layers.
+        imgsz (tuple[int, int]): The input image size (height, width).
     """
 
     def __init__(self, model, imgsz=(640, 640)):
@@ -108,15 +111,15 @@ class FXModel(torch.nn.Module):
                     )
                 )
             if type(m) is Pose:
-                m.forward = types.MethodType(pose_forward, m)  # bind method to Detect
+                m.forward = types.MethodType(pose_forward, m)  # bind method to Pose
             if type(m) is Segment:
-                m.forward = types.MethodType(segment_forward, m)  # bind method to Detect
+                m.forward = types.MethodType(segment_forward, m)  # bind method to Segment
             x = m(x)  # run
             y.append(x)  # save output
         return x
 
 
-def _inference(self, x: dict[str, torch.Tensor]) -> tuple[torch.Tensor]:
+def _inference(self, x: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     """Decode boxes and cls scores for imx object detection."""
     dbox = self.decode_bboxes(self.dfl(x["boxes"]), self.anchors.unsqueeze(0)) * self.strides
     return dbox.transpose(1, 2), x["scores"].sigmoid().permute(0, 2, 1)
@@ -166,7 +169,7 @@ class NMSWrapper(torch.nn.Module):
             score_threshold (float): Score threshold for non-maximum suppression.
             iou_threshold (float): Intersection over union threshold for non-maximum suppression.
             max_detections (int): The number of detections to return.
-            task (str): Task type, either 'detect' or 'pose'.
+            task (str): Task type, one of 'detect', 'pose', or 'segment'.
         """
         super().__init__()
         self.model = model
@@ -176,7 +179,15 @@ class NMSWrapper(torch.nn.Module):
         self.task = task
 
     def forward(self, images):
-        """Forward pass with model inference and NMS post-processing."""
+        """Forward pass with model inference and NMS post-processing.
+
+        Args:
+            images (torch.Tensor): Input image tensor with shape (B, C, H, W).
+
+        Returns:
+            (tuple[torch.Tensor, ...]): Post-NMS boxes, scores, and labels, followed by keypoints for pose, mask
+                coefficients and prototypes for segment, or the number of valid detections for detect.
+        """
         from edgemdt_cl.pytorch.nms.nms_with_indices import multiclass_nms_with_indices
 
         # model inference
@@ -190,7 +201,7 @@ class NMSWrapper(torch.nn.Module):
             max_detections=self.max_detections,
         )
         if self.task == "pose":
-            kpts = outputs[2]  # (bs, max_detections, kpts 17*3)
+            kpts = outputs[2]  # (bs, num_anchors, nk), e.g. nk=17*3
             out_kpts = torch.gather(kpts, 1, nms_outputs.indices.unsqueeze(-1).expand(-1, -1, kpts.size(-1)))
             return nms_outputs.boxes, nms_outputs.scores, nms_outputs.labels, out_kpts
         if self.task == "segment":
@@ -202,48 +213,75 @@ class NMSWrapper(torch.nn.Module):
 
 def torch2imx(
     model: torch.nn.Module,
-    file: Path | str,
-    conf: float,
+    output_dir: Path | str,
+    conf: float | None,
     iou: float,
     max_det: int,
     metadata: dict | None = None,
     gptq: bool = False,
     dataset=None,
     prefix: str = "",
-):
+) -> str:
     """Export YOLO model to IMX format for deployment on Sony IMX500 devices.
 
     This function quantizes a YOLO model using Model Compression Toolkit (MCT) and exports it to IMX format compatible
-    with Sony IMX500 edge devices. It supports both YOLOv8n and YOLO11n models for detection and pose estimation tasks.
+    with Sony IMX500 edge devices. It supports both YOLOv8n and YOLO11n models for detection, segmentation, pose
+    estimation, and classification tasks.
 
     Args:
         model (torch.nn.Module): The YOLO model to export. Must be YOLOv8n or YOLO11n.
-        file (Path | str): Output file path for the exported model.
-        conf (float): Confidence threshold for NMS post-processing.
+        output_dir (Path | str): Directory to save the exported IMX model.
+        conf (float | None): Confidence threshold for NMS post-processing, 0.001 if None.
         iou (float): IoU threshold for NMS post-processing.
         max_det (int): Maximum number of detections to return.
         metadata (dict | None, optional): Metadata to embed in the ONNX model. Defaults to None.
         gptq (bool, optional): Whether to use Gradient-Based Post Training Quantization. If False, uses standard Post
             Training Quantization. Defaults to False.
-        dataset (optional): Representative dataset for quantization calibration. Defaults to None.
+        dataset (DataLoader | Callable, optional): Representative calibration dataloader, or a callable returning one.
+            Defaults to None.
         prefix (str, optional): Logging prefix string. Defaults to "".
 
     Returns:
-        f (Path): Path to the exported IMX model directory
+        (str): Path to the exported IMX model directory.
 
     Raises:
         ValueError: If the model is not a supported YOLOv8n or YOLO11n variant.
+        FileNotFoundError: If the `imxconv-pt` converter binary cannot be found.
 
     Examples:
+        This function is called by the exporter; export through the public API instead
         >>> from ultralytics import YOLO
         >>> model = YOLO("yolo11n.pt")
-        >>> path, _ = export_imx(model, "model.imx", conf=0.25, iou=0.7, max_det=300)
+        >>> path = model.export(format="imx")
 
     Notes:
-        - Requires model_compression_toolkit, onnx, edgemdt_tpc, and edge-mdt-cl packages
-        - Only supports YOLOv8n and YOLO11n models (detection and pose tasks)
+        - Auto-installs Java>=17, model-compression-toolkit, imx500-converter, and related packages if not present
+        - Only supports YOLOv8n and YOLO11n models (detection, segmentation, pose, and classification tasks)
         - Output includes quantized ONNX model, IMX binary, and labels.txt file
     """
+    # Install Java>=17
+    try:
+        java_output = subprocess.run(["java", "--version"], check=True, capture_output=True).stdout.decode()
+        version_match = re.search(r"(?:openjdk|java) (\d+)", java_output)
+        java_version = int(version_match.group(1)) if version_match else 0
+        assert java_version >= 17, "Java version too old"
+    except (FileNotFoundError, subprocess.CalledProcessError, AssertionError):
+        if IS_UBUNTU or IS_DEBIAN_TRIXIE:
+            check_apt_requirements(["openjdk-21-jre"])
+        elif IS_RASPBERRYPI or IS_DEBIAN_BOOKWORM:
+            check_apt_requirements(["openjdk-17-jre"])
+
+    check_requirements(
+        (
+            "model-compression-toolkit>=2.4.1",
+            "edge-mdt-cl>=1.1.0",
+            "edge-mdt-tpc>=1.2.0",
+            "pydantic<2.12",
+            "imx500-converter[pt]>=3.18.2",
+        )
+    )
+    dataset = dataset() if callable(dataset) else dataset  # resolve lazy dataloader
+
     import model_compression_toolkit as mct
     import onnx
     from edgemdt_tpc import get_target_platform_capabilities
@@ -301,15 +339,16 @@ def torch2imx(
     if model.task != "classify":
         quant_model = NMSWrapper(
             model=quant_model,
-            score_threshold=conf or 0.001,
+            score_threshold=0.001 if conf is None else conf,
             iou_threshold=iou,
             max_detections=max_det,
             task=model.task,
         )
 
-    f = Path(str(file).replace(file.suffix, "_imx_model"))
-    f.mkdir(exist_ok=True)
-    onnx_model = f / Path(str(file.name).replace(file.suffix, "_imx.onnx"))  # js dir
+    output_dir = Path(output_dir).resolve()  # rmtree refuses a symlinked directory
+    rmtree(output_dir, ignore_errors=True)  # a re-export would keep an older export's <stem>_imx.onnx
+    output_dir.mkdir(parents=True)
+    onnx_model = output_dir / "model_imx.onnx"
 
     with onnx_export_patch():
         mct.exporter.pytorch_export_model(
@@ -317,7 +356,7 @@ def torch2imx(
         )
 
     model_onnx = onnx.load(onnx_model)  # load onnx model
-    for k, v in metadata.items():
+    for k, v in (metadata or {}).items():
         meta = model_onnx.metadata_props.add()
         meta.key, meta.value = k, str(v)
 
@@ -332,12 +371,12 @@ def torch2imx(
         raise FileNotFoundError("imxconv-pt not found. Install with: pip install imx500-converter[pt]")
 
     subprocess.run(
-        [str(imxconv), "-i", str(onnx_model), "-o", str(f), "--no-input-persistency", "--overwrite-output"],
+        [str(imxconv), "-i", str(onnx_model), "-o", str(output_dir), "--no-input-persistency", "--overwrite-output"],
         check=True,
     )
 
     # Needed for imx models.
-    with open(f / "labels.txt", "w", encoding="utf-8") as file:
-        file.writelines([f"{name}\n" for _, name in model.names.items()])
+    with open(output_dir / "labels.txt", "w", encoding="utf-8") as labels_file:
+        labels_file.writelines([f"{name}\n" for _, name in model.names.items()])
 
-    return f
+    return str(output_dir)
