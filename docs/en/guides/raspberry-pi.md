@@ -1,5 +1,5 @@
 ---
-title: YOLO26 on Raspberry Pi Setup & Benchmarks
+title: Raspberry Pi Setup Guide for YOLO
 comments: true
 description: Deploy Ultralytics YOLO26 on Raspberry Pi 4 and 5 with install steps, NCNN export for fastest inference, camera setup, and benchmarks across eight formats.
 keywords: Ultralytics, YOLO26, Raspberry Pi, setup, guide, benchmarks, computer vision, object detection, NCNN, Docker, camera modules
@@ -61,7 +61,7 @@ You can set up the Ultralytics package on Raspberry Pi in two ways for your next
 
 The fastest way to get started with Ultralytics YOLO26 on Raspberry Pi is to run with a pre-built Docker image for Raspberry Pi.
 
-Run the command below to pull the Docker container and run it on Raspberry Pi. This is based on the official [Python](https://hub.docker.com/_/python) `3.13-slim-trixie` image, which runs Debian 13 with Python 3.13.
+Run the command below to pull the Docker container and run it on Raspberry Pi. This is based on the official [Python](https://hub.docker.com/_/python) `3.13-slim` image, which runs Python 3.13 on the latest Debian release.
 
 ```bash
 t=ultralytics/ultralytics:latest-arm64

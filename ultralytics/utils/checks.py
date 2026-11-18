@@ -30,7 +30,6 @@ from ultralytics.utils import (
     GIT,
     IS_COLAB,
     IS_DOCKER,
-    IS_JETSON,
     IS_KAGGLE,
     IS_PIP_PACKAGE,
     LINUX,
@@ -145,13 +144,14 @@ def resolve_platform_uri(uri, hard=True):
     return None
 
 
-def parse_requirements(file_path=ROOT.parent / "requirements.txt", package=""):
+def parse_requirements(file_path=ROOT.parent / "requirements.txt", package="", extra=""):
     """Parse a requirements.txt file, ignoring lines that start with '#' and any text after '#'.
 
     Args:
         file_path (str | Path): Path to the requirements.txt file.
-        package (str, optional): Installed Python package whose non-extra requirements are parsed instead of the
-            requirements.txt file.
+        package (str, optional): Installed Python package whose non-extra requirements that apply to the current
+            environment are parsed instead of the requirements.txt file.
+        extra (str, optional): Parse only the requirements of this optional extra of `package` instead.
 
     Returns:
         requirements (list[SimpleNamespace]): List of parsed requirements as SimpleNamespace objects with `name` and
@@ -162,7 +162,14 @@ def parse_requirements(file_path=ROOT.parent / "requirements.txt", package=""):
         >>> parse_requirements(package="ultralytics")
     """
     if package:
-        requires = [x for x in metadata.distribution(package).requires if "extra == " not in x]
+        from packaging.markers import Marker  # scoped, 'packaging' is a matplotlib dependency
+
+        requires = [
+            x
+            for x in metadata.distribution(package).requires or ()  # None when no requirements are declared
+            if ("extra == " in x) == bool(extra)
+            and (";" not in x or Marker(x.partition(";")[2]).evaluate({"extra": extra}))
+        ]
     else:
         requires = Path(file_path).read_text().splitlines()
 
@@ -171,7 +178,7 @@ def parse_requirements(file_path=ROOT.parent / "requirements.txt", package=""):
         line = line.strip()
         if line and not line.startswith("#"):
             line = line.partition("#")[0].strip()  # ignore inline comments
-            if match := re.match(r"([a-zA-Z0-9-_]+)\s*([<>!=~]+.*)?", line):
+            if match := re.match(r"([a-zA-Z0-9][a-zA-Z0-9-_.]*)\s*([<>!=~]+.*)?", line):
                 requirements.append(SimpleNamespace(name=match[1], specifier=match[2].strip() if match[2] else ""))
 
     return requirements
@@ -430,9 +437,12 @@ def check_pip_update_available():
     return False
 
 
+FONT, FONT_UNICODE = "Arial.ttf", "Arial.Unicode.ttf"  # label fonts for Latin text and for all other scripts
+
+
 @ThreadingLocked()
 @functools.lru_cache
-def check_font(font="Arial.ttf"):
+def check_font(font=FONT):
     """Find font locally or download to user's configuration directory if it does not already exist.
 
     Args:
@@ -575,10 +585,14 @@ def check_requirements(requirements=ROOT.parent / "requirements.txt", exclude=()
 
         for candidate in candidates:
             r_stripped = candidate.rpartition("/")[-1].replace(".git", "")  # replace git+https://org/repo.git -> 'repo'
-            match = re.match(r"([a-zA-Z0-9-_]+)(?:\[[^\]]*\])?([<>!=~]+.*)?", r_stripped)
-            name, required = match[1], match[2].strip() if match[2] else ""
+            match = re.match(r"([a-zA-Z0-9-_.]+)(?:\[([^\]]*)\])?([<>!=~]+.*)?", r_stripped)
+            name, required = match[1], match[3].strip() if match[3] else ""
             try:
-                if check_version(metadata.version(name), required):
+                if check_version(metadata.version(name), required) and all(
+                    metadata.version(x.name)  # raises PackageNotFoundError while a requested extra is not installed
+                    for extra in (match[2].split(",") if match[2] else ())
+                    for x in parse_requirements(package=name, extra=extra.strip())
+                ):
                     satisfied = True
                     break
             except (AssertionError, metadata.PackageNotFoundError):
@@ -665,12 +679,15 @@ def check_executorch_requirements():
 def check_tensorrt(min_version: str = "7.0.0"):
     """Check and install TensorRT requirements including platform-specific dependencies.
 
+    An installed `tensorrt-cu{N}` or `tensorrt` distribution (as shipped in NVIDIA containers and JetPack) satisfies the
+    check; otherwise `tensorrt-cu{N}` matching the PyTorch CUDA major version is installed.
+
     Args:
         min_version (str): Minimum supported TensorRT version (default: "7.0.0").
     """
     if LINUX:
-        cuda_version = torch.version.cuda.split(".")[0]
-        check_requirements(f"tensorrt-cu{cuda_version}>={min_version},!=10.2.0")
+        spec = f">={min_version},!=10.2.0"
+        check_requirements([(f"tensorrt-cu{torch.version.cuda.split('.')[0]}{spec}", f"tensorrt{spec}")])
 
 
 def check_torchvision():
@@ -690,6 +707,24 @@ def check_torchvision():
             "'pip install -U torch torchvision' to update both.\n"
             "For a full compatibility table see https://github.com/pytorch/vision#installation"
         )
+
+
+def check_paddle(version: str = "==3.0.0" if ARM64 else ">=3.0.0,<3.3.0", gpu: str = ">=3.0.0"):
+    """Ensure a PaddlePaddle build is installed, installing the CPU build if none is.
+
+    PaddlePaddle 3.x GPU builds are published only on PaddlePaddle's own package index, not PyPI, so an installed
+    `paddlepaddle-gpu` is version-checked and never replaced by the CPU build, which ships the same `paddle` module. The
+    default CPU range excludes 3.3+, whose oneDNN CPU inference fails, see
+    https://github.com/PaddlePaddle/Paddle/issues/77340.
+
+    Args:
+        version (str): Required CPU `paddlepaddle` version, defaulting to the export and inference range.
+        gpu (str): Required version of an installed `paddlepaddle-gpu` build.
+    """
+    if check_version("paddlepaddle-gpu", ""):
+        check_version("paddlepaddle-gpu", gpu, hard=True, msg="(see https://www.paddlepaddle.org.cn/en/install)")
+    else:
+        check_requirements(f"paddlepaddle{version}")
 
 
 def check_suffix(file="yolo26n.pt", suffix=".pt", msg=""):
@@ -1106,35 +1141,19 @@ def print_args(args: dict | None = None, show_file=True, show_func=False):
 
 
 def cuda_device_count() -> int:
-    """Get the number of NVIDIA GPUs available in the environment.
+    """Get the number of NVIDIA or AMD GPUs visible to PyTorch.
 
     Returns:
-        (int): The number of NVIDIA GPUs available.
+        (int): The number of GPUs available to PyTorch CUDA.
     """
-    if IS_JETSON:
-        # NVIDIA Jetson does not fully support nvidia-smi and therefore use PyTorch instead
-        return torch.cuda.device_count()
-    else:
-        try:
-            # Run the nvidia-smi command and capture its output
-            output = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=count", "--format=csv,noheader,nounits"], encoding="utf-8"
-            )
-
-            # Take the first line and strip any leading/trailing white space
-            first_line = output.strip().split("\n", 1)[0]
-
-            return int(first_line)
-        except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-            # If the command fails, nvidia-smi is not found, or output is not an integer, assume no GPUs are available
-            return 0
+    return torch.cuda.device_count()
 
 
 def cuda_is_available() -> bool:
     """Check if CUDA is available in the environment.
 
     Returns:
-        (bool): True if one or more NVIDIA GPUs are available, False otherwise.
+        (bool): True if one or more NVIDIA or AMD GPUs are available, False otherwise.
     """
     return cuda_device_count() > 0
 
@@ -1193,11 +1212,7 @@ def is_sudo_available() -> bool:
     """
     if WINDOWS:
         return False
-    cmd = "sudo --version"
-    return (
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode
-        == 0
-    )
+    return shutil.which("sudo") is not None
 
 
 # Run checks and define constants
@@ -1213,3 +1228,5 @@ IS_PYTHON_MINIMUM_3_11 = check_python("3.11", hard=False)
 IS_PYTHON_MINIMUM_3_13 = check_python("3.13", hard=False)
 
 ONNXRUNTIME_BUILDS = "onnxruntime", "onnxruntime-gpu", "onnxruntime-qnn", "onnxruntime-vitisai", "onnxruntime-windowsml"
+# PyPI onnxruntime-gpu 1.27+ is CUDA 13 only, so cap CUDA 12 torch (no aarch64 wheels before 1.27, so not ARM64)
+ONNXRUNTIME_CUDA = f"onnxruntime-gpu[cuda]{'<1.27' * (not ARM64 and str(torch.version.cuda)[:3] == '12.')}"

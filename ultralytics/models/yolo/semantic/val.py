@@ -17,6 +17,7 @@ from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import LOGGER, RANK, ops
 from ultralytics.utils.metrics import ConfusionMatrix, SemanticMetrics
 from ultralytics.utils.plotting import plot_images
+from ultralytics.utils.torch_utils import interpolate_bilinear
 
 
 class SemanticSegmentationValidator(DetectionValidator):
@@ -64,7 +65,7 @@ class SemanticSegmentationValidator(DetectionValidator):
         self.results_dir = None
         if self.args.save_json:
             self.results_dir = self.save_dir / "results"
-            self.mask_root = os.path.commonpath([os.path.dirname(f) for f in self.dataset.im_files])
+            self.mask_root = os.path.commonpath([Path(f).absolute().parent for f in self.dataset.im_files])
         cm_nc = self.metrics.cm_nc
         if cm_nc == 2 and len(self.names) == 1:  # binary segmentation, expand to include background
             cm_names = {0: "background", 1: next(iter(self.names.values()))}
@@ -73,8 +74,8 @@ class SemanticSegmentationValidator(DetectionValidator):
             cm_names = {i: base[i] for i in range(cm_nc)}
         self.confusion_matrix = ConfusionMatrix(names=cm_names, task="semantic")
 
-    def preprocess(self, batch):
-        """Preprocess a batch of images and masks.
+    def preprocess_targets(self, batch):
+        """Move semantic targets to the device and retain their shape.
 
         Args:
             batch (dict): Batch data containing images and masks.
@@ -82,7 +83,7 @@ class SemanticSegmentationValidator(DetectionValidator):
         Returns:
             (dict): Preprocessed batch.
         """
-        batch = super().preprocess(batch)
+        batch = super().preprocess_targets(batch)
         batch["semantic_mask"] = batch["semantic_mask"].to(self.device, dtype=torch.int32)
         self._semantic_target_shape = tuple(batch["semantic_mask"].shape[-2:])
         return batch
@@ -105,7 +106,7 @@ class SemanticSegmentationValidator(DetectionValidator):
             return preds.to(torch.int32)
         pred_hw = preds.shape[2:]
         if pred_hw[0] != self._semantic_target_shape[0] or pred_hw[1] != self._semantic_target_shape[1]:
-            preds = F.interpolate(preds, size=self._semantic_target_shape, mode="bilinear", align_corners=False)
+            preds = interpolate_bilinear(preds, self._semantic_target_shape)
         if self.nc > 1:  # CPU argmax over a non-innermost dim runs as a per-output loop; max(dim) streams
             return (preds.max(dim=1).indices if preds.device.type == "cpu" else preds.argmax(dim=1)).to(torch.int32)
         return preds.gt(0).squeeze(1).to(torch.int32)
@@ -155,7 +156,7 @@ class SemanticSegmentationValidator(DetectionValidator):
             pred = pred[0, 0].byte().cpu().numpy()
             if isinstance(self.dataset, SemanticDataset) and self.dataset.label_mapping:
                 pred = self.dataset.convert_label(pred, inverse=True)
-            save_path = self.results_dir / Path(im_file).relative_to(self.mask_root).with_suffix(".png")
+            save_path = self.results_dir / Path(im_file).absolute().relative_to(self.mask_root).with_suffix(".png")
             save_path.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(pred).save(save_path)
 
@@ -193,5 +194,6 @@ class SemanticSegmentationValidator(DetectionValidator):
             paths=batch["im_file"],
             fname=self.save_dir / f"val_batch{ni}_pred.jpg",
             names=self.names,
+            class_colors=self.data.get("colors"),
             on_plot=self.on_plot,
         )

@@ -1,5 +1,6 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
+import ast
 import io
 import shutil
 import sys
@@ -159,7 +160,7 @@ def test_int8_calibration_validates_split():
     """Check INT8 calibration rejects dataset splits that do not exist."""
     exporter = object.__new__(Exporter)
     exporter.model = SimpleNamespace(task="obb")
-    exporter.args = SimpleNamespace(data="coco8.yaml", split="trainval")
+    exporter.args = get_cfg(overrides={"data": "coco8.yaml", "split": "trainval"})
     exporter.imgsz = [32]
     with pytest.raises(FileNotFoundError, match="trainval"):
         exporter.get_int8_calibration_dataloader()
@@ -346,41 +347,36 @@ def test_export_coreml_matrix(task, dynamic, quantize, nms, batch):
     MACOS and checks.IS_PYTHON_MINIMUM_3_13,
     reason="coremltools deadlocks after OpenVINO on macOS Python 3.13 (conflicting OpenMP runtimes)",
 )
-@pytest.mark.parametrize("format", ["coreml", "mlmodel"])
-def test_export_coreml(isolated_model, format, monkeypatch, tmp_path):
+@pytest.mark.parametrize("format,quantize", [("coreml", None), ("mlmodel", None), ("mlmodel", 8), ("mlmodel", "w8a16")])
+def test_export_coreml(isolated_model, format, quantize, tmp_path):
     """Test YOLO export to CoreML format and check for errors."""
-    from ultralytics.utils.export import coreml
-
-    quantize, torch2coreml = [], coreml.torch2coreml
-
-    def capture_quantize(*args, **kwargs):
-        quantize.append(kwargs["quantize"])
-        return torch2coreml(*args, **kwargs)
-
-    monkeypatch.setattr(coreml, "torch2coreml", capture_quantize)
     # Capture stdout and stderr
     stdout, stderr = io.StringIO(), io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
         file = YOLO(isolated_model_path(tmp_path, WEIGHTS_DIR / "yolo11n.pt")).export(
-            format=format, nms=True, imgsz=32, iou=0.42, conf=0.24
+            format=format, nms=True, imgsz=32, iou=0.42, conf=0.24, quantize=quantize
         )
         import coremltools as ct
 
         spec = ct.utils.load_spec(str(file))
         metadata = spec.description.metadata
         assert metadata.author and metadata.shortDescription and metadata.license and metadata.versionString
+        assert ast.literal_eval(metadata.userDefined["args"])["quantize"] == (16 if format == "coreml" else quantize)
         assert metadata.userDefined["IoU threshold"] == "0.42"
         assert metadata.userDefined["Confidence threshold"] == "0.24"
         assert all(key in metadata.userDefined for key in ("names", "stride", "task"))
         assert next(iter(spec.pipeline.models[1].nonMaximumSuppression.stringClassLabels.vector)) == "person"
         assert [output.name for output in spec.description.output] == ["confidence", "coordinates"]
-        if MACOS:
-            file = YOLO(isolated_model).export(format="coreml", imgsz=32)
-            YOLO(file)(SOURCE, imgsz=32)  # model prediction only supported on macOS for raw-output models
+        if quantize in {8, "w8a16"}:
+            layers = spec.pipeline.models[0].neuralNetwork.layers
+            assert any(layer.convolution.weights.quantization.numberOfBits == 8 for layer in layers)
+        if MACOS:  # CoreML inference is only supported on macOS
+            YOLO(file)(SOURCE, imgsz=32)
+            if format == "coreml" and quantize is None:  # raw-output model once, not per parametrization
+                YOLO(YOLO(isolated_model).export(format="coreml", imgsz=32))(SOURCE, imgsz=32)
 
     # Check captured output for errors
     output = stdout.getvalue() + stderr.getvalue()
-    assert quantize[0] == (16 if format == "coreml" else None)
     assert "Error" not in output, f"CoreML export produced errors: {output}"
     assert "You will not be able to run predict()" not in output, "CoreML export has predict() error"
 
@@ -418,10 +414,10 @@ def test_export_pb(isolated_model):
     YOLO(file)(SOURCE, imgsz=32)
 
 
-@pytest.mark.skipif(True, reason="Test disabled as Paddle protobuf and ONNX protobuf requirements conflict.")
 def test_export_paddle(isolated_model):
-    """Test YOLO export to Paddle format, noting protobuf conflicts with ONNX."""
-    YOLO(isolated_model).export(format="paddle", imgsz=32)
+    """Test YOLO export to Paddle format and inference with the exported model."""
+    file = YOLO(isolated_model).export(format="paddle", imgsz=32)
+    YOLO(file)(SOURCE, imgsz=32)
 
 
 @pytest.mark.skipif(not TORCH_1_10, reason="MNN export requires torch>=1.10")
@@ -491,12 +487,12 @@ def test_export_ncnn(isolated_model):
 
 @pytest.mark.slow
 @pytest.mark.skipif(not TORCH_2_0, reason="NCNN inference causes segfault on PyTorch<2.0")
-@pytest.mark.parametrize("task, quantize, batch", list(product(sorted(TASKS), [16], [1])))
-def test_export_ncnn_matrix(task, quantize, batch):
-    """Test YOLO export to NCNN format considering various export configurations."""
+@pytest.mark.parametrize("task", sorted(TASKS))
+def test_export_ncnn_matrix(task):
+    """Test YOLO export to NCNN format for every task."""
     skip_rpi_semantic(task)
-    file = YOLO(TASK2MODEL[task]).export(format="ncnn", imgsz=32, quantize=quantize, batch=batch)
-    YOLO(file)([SOURCE] * batch, imgsz=32)  # exported model inference
+    file = YOLO(TASK2MODEL[task]).export(format="ncnn", imgsz=32, quantize=16)
+    YOLO(file)(SOURCE, imgsz=32)  # exported model inference
     shutil.rmtree(file, ignore_errors=True)  # retry in case of potential lingering multi-threaded file usage errors
 
 
@@ -551,6 +547,25 @@ def test_export_executorch(isolated_model):
     assert metadata_file.exists(), f"ExecuTorch metadata.yaml not found: {metadata_file}"
     # Note: Inference testing skipped as ExecuTorch requires special runtime setup
     shutil.rmtree(file, ignore_errors=True)  # cleanup
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not LINUX or ARM64, reason="NXP compilation requires Linux x86_64")
+@pytest.mark.skipif(not checks.IS_PYTHON_MINIMUM_3_10, reason="NXP SDK and LiteRT require Python>=3.10")
+@pytest.mark.parametrize("task", TASKS)
+def test_export_nxp(task, tmp_path):
+    """Compile real models and verify that the artifact contains NPU graphs and task metadata."""
+    from ai_edge_litert import schema_py_generated as schema
+
+    from ultralytics.nn.backends.litert import LiteRTBackend
+
+    model = isolated_model_path(tmp_path, WEIGHTS_DIR / TASK2MODEL[task])
+    file = Path(YOLO(model).export(format="nxp", imgsz=64, data=TASK2DATA[task]))
+    flatbuffer = schema.Model.GetRootAsModel(file.read_bytes(), 0)
+    assert any(
+        flatbuffer.OperatorCodes(i).CustomCode() == b"NeutronGraph" for i in range(flatbuffer.OperatorCodesLength())
+    )
+    assert LiteRTBackend.read_metadata(file)["task"] == task
 
 
 @pytest.mark.slow
@@ -626,6 +641,12 @@ def test_export_qnn(isolated_model):
     assert ep_nodes and not any(a.name == "io_name_overrides" for n in ep_nodes for a in n.attribute)
     # Note: on-device inference is not exercised here as it requires Qualcomm Snapdragon hardware
     Path(file).unlink(missing_ok=True)  # cleanup
+
+
+def test_export_stedgeai(isolated_model):
+    """Test YOLO export to whole-graph INT8 ONNX for ST Edge AI Core."""
+    file = YOLO(isolated_model).export(format="stedgeai", imgsz=32, quantize=8, data="coco8.yaml", fraction=0.25)
+    YOLO(file)(SOURCE, imgsz=32)  # exported model inference
 
 
 @pytest.mark.parametrize("env", [k for k, v in EXPORT_ENVS.items() if k != "base" or v["smoke"]])

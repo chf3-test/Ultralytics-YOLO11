@@ -14,6 +14,7 @@ import os
 import subprocess
 import time
 import warnings
+from contextlib import nullcontext
 from copy import copy, deepcopy
 from datetime import datetime, timedelta
 from functools import partial
@@ -238,16 +239,16 @@ class BaseTrainer:
         """Execute the training process, using DDP subprocess for multi-GPU or direct training for single-GPU."""
         # Run subprocess if DDP training, else train normally
         try:
+            if self.world_size > 1 and self.args.batch < self.world_size:
+                raise ValueError(
+                    f"'batch={self.args.batch}' must be >= GPU count {self.world_size} for Multi-GPU training "
+                    f"(AutoBatch batch<1 is not supported), i.e. batch={self.world_size * 8}."
+                )
             if self.ddp:
                 # Argument checks
                 if self.args.rect:
                     LOGGER.warning("'rect=True' is incompatible with Multi-GPU training, setting 'rect=False'")
                     self.args.rect = False
-                if self.args.batch < 1.0:
-                    raise ValueError(
-                        "AutoBatch with batch<1 not supported for Multi-GPU training, "
-                        f"please specify a valid batch size multiple of GPU count {self.world_size}, i.e. batch={self.world_size * 8}."
-                    )
 
                 # Command
                 cmd, file = None, None
@@ -344,6 +345,8 @@ class BaseTrainer:
     def _setup_train(self):
         """Configure model, optimizer, dataloaders, and training utilities before the training loop."""
         ckpt = self.setup_model()
+        if self.resume and ckpt:
+            init_seeds(self.args.seed + 2 + RANK + ckpt.get("epoch", -1), deterministic=self.args.deterministic)
         self.model = self.model.to(self.device)
         # channels_last (NHWC) is CUDA-only: lossless and Tensor-Core friendly there, but numerically wrong
         # on MPS and no benefit on CPU. Not auto-enabled on Windows, where it measured 3x slower (#26105).
@@ -366,7 +369,7 @@ class BaseTrainer:
             if self.resume and ckpt.get("modelopt"):
                 restore_qat(self.model, ckpt["modelopt"])
             else:
-                batch = max(self.batch_size // max(self.world_size, 1), 1) if self.batch_size >= 1 else 16
+                batch = self.batch_size // max(self.world_size, 1) if self.batch_size >= 1 else 16
                 with torch_distributed_zero_first(LOCAL_RANK), override_configs(self.args, {"cache": False}):
                     calibration_loader = self.get_dataloader(
                         self.data["train"], batch_size=batch, rank=-1, mode="train"
@@ -538,32 +541,36 @@ class BaseTrainer:
                         if "momentum" in x:
                             x["momentum"] = float(np.interp(ni, xi, [self.args.warmup_momentum, self.args.momentum]))
 
+                do_step = ni - last_opt_step >= self.accumulate
+                no_sync = self.world_size > 1 and not self.args.compile and not do_step  # all-reduce on steps only
+
                 # Forward
                 try:
-                    with autocast(torch.bfloat16 if self.args.amp == "bf16" else self.amp, device=self.device.type):
-                        batch = self.preprocess_batch(batch)
-                        if self.args.compile:
-                            # Decouple inference and loss calculations for improved compile performance
-                            preds = self.model(batch["img"])
-                            loss, self.loss_items = unwrap_model(self.model).loss(batch, preds)
-                        else:
-                            loss, self.loss_items = self.model(batch)
-                        self.loss = loss.sum()
-                        if RANK != -1:
-                            self.loss *= self.world_size
-                        if not self.loss_names:  # derive loss names from the criterion's loss dict on first batch
-                            self.loss_names = tuple(self.loss_items)
-                            if RANK in {-1, 0}:
-                                LOGGER.info(self.progress_string())
-                                self.metrics.update(dict.fromkeys(self.label_loss_items(prefix="val"), 0.0))
-                        self.tloss = (
-                            self.loss_items
-                            if self.tloss is None
-                            else {k: (self.tloss[k] * i + v) / (i + 1) for k, v in self.loss_items.items()}
-                        )
+                    with self.model.no_sync() if no_sync else nullcontext():
+                        with autocast(torch.bfloat16 if self.args.amp == "bf16" else self.amp, device=self.device.type):
+                            batch = self.preprocess_batch(batch)
+                            if self.args.compile:
+                                # Decouple inference and loss calculations for improved compile performance
+                                preds = self.model(batch["img"])
+                                loss, self.loss_items = unwrap_model(self.model).loss(batch, preds)
+                            else:
+                                loss, self.loss_items = self.model(batch)
+                            self.loss = loss.sum()
+                            if RANK != -1:
+                                self.loss *= self.world_size
+                            if not self.loss_names:  # derive loss names from the criterion's loss dict on first batch
+                                self.loss_names = tuple(self.loss_items)
+                                if RANK in {-1, 0}:
+                                    LOGGER.info(self.progress_string())
+                                    self.metrics.update(dict.fromkeys(self.label_loss_items(prefix="val"), 0.0))
+                            self.tloss = (
+                                self.loss_items
+                                if self.tloss is None
+                                else {k: (self.tloss[k] * i + v) / (i + 1) for k, v in self.loss_items.items()}
+                            )
 
-                    # Backward
-                    self.scaler.scale(self.loss).backward()
+                        # Backward
+                        self.scaler.scale(self.loss).backward()
                 except RuntimeError as e:
                     is_oom = "out of memory" in str(e).lower()  # torch.cuda.OutOfMemoryError requires torch>=1.13
                     if not is_oom and not any(
@@ -600,7 +607,7 @@ class BaseTrainer:
                     acc0 = self.accumulate  # the rebuild recomputed the nominal for the reduced batch size
                     self.optimizer.zero_grad()
                     break  # restart epoch loop with reduced batch size
-                if ni - last_opt_step >= self.accumulate:
+                if do_step:
                     self.optimizer_step()
                     last_opt_step = ni
 
@@ -631,7 +638,7 @@ class BaseTrainer:
                         self.plot_training_samples(batch, ni)
 
                 self.run_callbacks("on_train_batch_end")
-                if self.stop:
+                if self.stop and RANK == -1:  # DDP ranks finish the epoch and share stop before validation
                     break  # allow external stop (e.g. platform cancellation) between batches
             else:
                 # for/else: this block runs only when the for loop completes without break (no OOM retry)
@@ -650,6 +657,10 @@ class BaseTrainer:
                 self.ema.update_attr(self.model, include=["yaml", "nc", "args", "names", "stride", "class_weights"])
 
             # Validation
+            if RANK != -1:  # an external stop (e.g. platform cancellation) is set on rank 0 only
+                broadcast_list = [self.stop if RANK == 0 else None]
+                dist.broadcast_object_list(broadcast_list, 0)  # all ranks must agree on validating below
+                self.stop = broadcast_list[0]
             final_epoch = epoch + 1 >= self.epochs
             if self.args.val or final_epoch or self.stopper.possible_stop or self.stop:
                 self._clear_memory(None if self.device.type == "mps" else 0.5)  # prevent VRAM spike
@@ -978,8 +989,36 @@ class BaseTrainer:
         """Set or update model parameters before training."""
         self.model.names = self.data["names"]
 
+    def get_class_counts(self):
+        """Return per-class training label counts for cls_pw weighting; empty skips weighting. Override in subclasses."""
+        return np.zeros(0)
+
+    def compute_class_weights(self, class_counts):
+        """Return inverse-frequency weights raised to cls_pw, giving classes without train labels the mean weight."""
+        present = class_counts > 0
+        weights = (1.0 / np.where(present, class_counts, 1.0)) ** self.args.cls_pw
+        return np.where(present, weights, weights[present].mean())
+
     def set_class_weights(self):
-        """Compute and set class weights for handling class imbalance. Override in subclasses."""
+        """Compute and set class weights for handling class imbalance.
+
+        Class weights are computed based on inverse class frequency in the training dataset,
+        raised to the power of cls_pw (0 < cls_pw <= 1 dampens; values are restricted to the range [0, 1]).
+        Final weights are normalized so their mean equals 1.0.
+        """
+        assert 0 <= self.args.cls_pw <= 1.0, "cls_pw must be in the range [0, 1]"
+        if self.args.cls_pw == 0.0:
+            return
+        class_counts = self.get_class_counts()
+        if not class_counts.any():  # nothing counted (e.g. missing/unreadable masks); keep default weights
+            return
+        weights = self.compute_class_weights(class_counts)
+        weights = weights / weights.mean()  # normalize so mean equals 1.0
+        model = unwrap_model(self.model)
+        if hasattr(model, "student_model"):
+            model = model.student_model  # distillation: the student model builds the loss criterion
+        model.class_weights = torch.from_numpy(weights).to(self.device)
+        LOGGER.info(f"Class weights: {model.class_weights.cpu().numpy().round(3)}")
 
     def progress_string(self):
         """Return a string describing training progress."""

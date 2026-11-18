@@ -6,11 +6,12 @@ import types
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 
 from ultralytics.nn.modules import Detect
-from ultralytics.utils import LOGGER
+from ultralytics.utils import LOGGER, PREDICT_IOU
 from ultralytics.utils.checks import check_requirements
 
 
@@ -60,7 +61,7 @@ def pipeline_coreml(
     output_shape: tuple[int, ...],
     metadata: dict,
     mlmodel: bool = False,
-    iou: float = 0.45,
+    iou: float = PREDICT_IOU,
     conf: float = 0.25,
     agnostic_nms: bool = False,
     weights_dir: Path | str | None = None,
@@ -73,7 +74,7 @@ def pipeline_coreml(
         output_shape (tuple[int, ...]): Output shape tuple from the exporter.
         metadata (dict): Model metadata.
         mlmodel (bool): Whether the model is an MLModel (vs MLProgram).
-        iou (float): IoU threshold for NMS, default 0.45; the exporter passes its `iou` arg (default 0.7).
+        iou (float): IoU threshold for NMS; the exporter passes its `iou` arg.
         conf (float): Confidence threshold for NMS.
         agnostic_nms (bool): Whether to use class-agnostic NMS.
         weights_dir (Path | str | None): Weights directory for MLProgram models.
@@ -198,8 +199,8 @@ def torch2coreml(
         classifier_names (list[str] | None): Class names for classifier config, or None if not a classifier.
         output_file (Path | str | None): Output file path, or None to skip saving.
         mlmodel (bool): Whether to export as ``.mlmodel`` (neural network) instead of ``.mlpackage`` (ML program).
-        quantize (int | str | None): Precision scheme, e.g. 16 for FP16 or 8/``"w8a16"`` for 8-bit k-means palettized
-            weights.
+        quantize (int | str | None): Precision scheme, e.g. 16 for FP16 or 8/``"w8a16"`` for 8-bit weights (linear
+            quantization for neural networks, k-means palettization for ML programs).
         metadata (dict | None): Metadata to embed in the CoreML model.
         prefix (str): Prefix for log messages.
 
@@ -213,7 +214,7 @@ def torch2coreml(
         if isinstance(m, Detect):
             m._gather = types.MethodType(_coreml_gather, m)
     ts = torch.jit.trace(model.eval(), im, strict=False, check_trace=False)  # skip re-trace check, like other exports
-    bits, mode = (8, "kmeans") if quantize in {8, "w8a16"} else (16, "linear") if quantize == 16 else (32, None)
+    bits = 8 if quantize in {8, "w8a16"} else 16 if quantize == 16 else 32
 
     # Based on apple's documentation it is better to leave out the minimum_deployment target and let that get set
     # internally based on the model conversion and output type.
@@ -249,15 +250,17 @@ def torch2coreml(
             )
     ct_model = ct.convert(ts, **convert_kwargs)
     if bits < 32:
-        if "kmeans" in mode:
-            check_requirements("scikit-learn")  # scikit-learn package required for k-means quantization
         if mlmodel:
-            ct_model = ct.models.neural_network.quantization_utils.quantize_weights(ct_model, bits, mode)
+            ct_model = ct.models.neural_network.quantization_utils.quantize_weights(ct_model, bits, "linear")
         elif bits == 8:  # mlprogram already quantized to FP16
+            check_requirements("scikit-learn")  # scikit-learn package required for k-means quantization
             import coremltools.optimize.coreml as cto
 
             op_config = cto.OpPalettizerConfig(mode="kmeans", nbits=bits, weight_threshold=512)
-            config = cto.OptimizationConfig(global_config=op_config)
+            # k-means rejects non-finite weights such as RT-DETR's inf-masked anchors, so leave those unpalettized
+            consts = ct_model._mil_program.find_ops(op_type="const")
+            skip = {op.name: None for op in consts if np.size(op.val.val) > 512 and not np.isfinite(op.val.val).all()}
+            config = cto.OptimizationConfig(global_config=op_config, op_name_configs=skip)
             ct_model = cto.palettize_weights(ct_model, config=config)
 
     m = dict(metadata or {})  # copy to avoid mutating original

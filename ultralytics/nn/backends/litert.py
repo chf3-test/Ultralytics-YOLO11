@@ -22,6 +22,18 @@ class LiteRTBackend(BaseBackend):
     keypoint coordinates are denormalized by image size.
     """
 
+    def __init__(self, weight: str | Path, device: torch.device | str, fp16: bool = False, format: str = "litert"):
+        """Initialize LiteRT inference, using the board's Neutron delegate for NXP models.
+
+        Args:
+            weight (str | Path): Path to the LiteRT model.
+            device (torch.device | str): Inference device.
+            fp16 (bool): Whether to request FP16 inference.
+            format (str): Model format, either "litert" or "nxp".
+        """
+        self.format = format
+        super().__init__(weight, device, fp16)
+
     def load_model(self, weight: str | Path) -> None:
         """Load a LiteRT model from a .tflite file.
 
@@ -29,15 +41,17 @@ class LiteRTBackend(BaseBackend):
             weight (str | Path): Path to the .tflite model file (metadata embedded as a metadata.json entry).
         """
         tflite_file = Path(weight)
-        self.intel = str(self.device).startswith("intel")  # intel:cpu|npu
+        # PyTorch device names: 'xpu' (Intel GPU) and 'npu' run through the Intel OpenVINO plugin, others on CPU
+        device = {"XPU": "GPU", "NPU": "NPU"}.get(str(self.device).upper().partition(":")[0])
+        self.device = torch.device("cpu")
+        self.intel = self.format == "litert" and device is not None
 
         LOGGER.info(f"Loading {tflite_file} for LiteRT inference...")
         if self.intel:  # Intel OpenVINO plugin through CompiledModel
             check_requirements(["ai-edge-litert>=2.3.0", "ai-edge-litert-sdk-intel>=2.3.0"])
             from ai_edge_litert.compiled_model import CompiledModel, HardwareAccelerator, IntelOpenVinoOptions, Options
 
-            backend = getattr(IntelOpenVinoOptions.GRAPH_BACKEND, self.device.partition(":")[2].upper(), None)
-            self.device = torch.device("cpu")
+            backend = getattr(IntelOpenVinoOptions.GRAPH_BACKEND, device)
             self.model = CompiledModel.from_file(
                 str(tflite_file),
                 options=Options(
@@ -53,10 +67,16 @@ class LiteRTBackend(BaseBackend):
             for d in self.input_details + self.output_details:
                 d["dtype"] = np.dtype(d["dtype"])
         else:
-            check_requirements("ai-edge-litert>=2.1.4")
-            from ai_edge_litert.interpreter import Interpreter
+            delegates = []
+            if self.format == "nxp":
+                from tflite_runtime.interpreter import Interpreter, load_delegate
 
-            self.interpreter = Interpreter(str(tflite_file), num_threads=NUM_THREADS)  # Enable multi-core inference
+                delegates = [load_delegate("libneutron_delegate.so")]
+            else:
+                check_requirements("ai-edge-litert>=2.1.4")
+                from ai_edge_litert.interpreter import Interpreter
+
+            self.interpreter = Interpreter(str(tflite_file), num_threads=NUM_THREADS, experimental_delegates=delegates)
             self.interpreter.allocate_tensors()
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
@@ -98,7 +118,6 @@ class LiteRTBackend(BaseBackend):
             self.interpreter.set_tensor(details["index"], im)
             self.interpreter.invoke()
 
-        kpt_start = 4 + len(self.names)  # pose keypoints follow the box (4) and class-score (nc) channels
         y = []
         for i, output in enumerate(self.output_details):
             if self.intel:
@@ -117,19 +136,9 @@ class LiteRTBackend(BaseBackend):
             # pixel coordinates (batch, max_det, 6+), so it is left as-is; legacy onnx2tf TFLite normalizes even the
             # end2end output, so it is denormalized on the last axis.
             if x.ndim == 3 and not self.end2end and getattr(self, "head", None) != "RTDETRDecoder":
-                x[:, [0, 2]] *= w
-                x[:, [1, 3]] *= h
-                if self.task == "pose":
-                    nd = self.kpt_shape[1]  # 2 (x, y) or 3 (x, y, visibility) values per keypoint
-                    x[:, kpt_start::nd] *= w
-                    x[:, kpt_start + 1 :: nd] *= h
+                self.denormalize(x, w, h)
             elif x.ndim == 3 and self.end2end and self.nhwc:
-                x[:, :, [0, 2]] *= w
-                x[:, :, [1, 3]] *= h
-                if self.task == "pose":  # post-NMS [B, N, box(4)+conf+cls+kpts], keypoints start at 6
-                    nd = self.kpt_shape[1]
-                    x[:, :, 6::nd] *= w
-                    x[:, :, 7::nd] *= h
+                self.denormalize(x, w, h, end2end=True)
             y.append(x)
 
         if self.task == "segment" and y[0].ndim == 4:  # order as (detections, protos)

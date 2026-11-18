@@ -13,7 +13,7 @@ from torch.nn.init import constant_, xavier_uniform_
 
 from ultralytics.utils import LOGGER
 from ultralytics.utils.tal import dist2bbox, dist2rbox, make_anchors
-from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, smart_inference_mode
+from ultralytics.utils.torch_utils import TORCH_1_11, fuse_conv_and_bn, interpolate_bilinear, smart_inference_mode
 
 from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Proto26, RealNVP, Residual, SwiGLUFFN
 from .conv import Conv, DWConv
@@ -835,8 +835,30 @@ class Depth(nn.Module):
         self.register_buffer("cal_a", torch.ones(1))
         self.register_buffer("cal_b", torch.zeros(1))
 
+    def log_depth(self, x: list[torch.Tensor]) -> torch.Tensor:
+        """Fuse multi-scale features and predict clamped log-depth.
+
+        Args:
+            x (list[torch.Tensor]): Feature tensors [P3, P4, P5] from the backbone/neck.
+
+        Returns:
+            (torch.Tensor): Uncalibrated log-depth of shape (B, 1, H/4, W/4), clamped to [-4, 5].
+        """
+        # Project all levels to same channel dim
+        feats = [self.proj[i](x[i]) for i in range(self.nl)]
+
+        out = feats[-1]
+        for i in range(self.nl - 2, -1, -1):
+            # align_corners=True is baked into the released depth weights. Constant scale (consecutive pyramid
+            # levels) keeps the upsample static for dynamic-shape CoreML export; output size is identical.
+            out = interpolate_bilinear(out, scale_factor=2, align_corners=True)
+            out = out + feats[i]
+            out = self.refine[i](out)
+
+        return self.head(out).clamp(-4.0, 5.0)
+
     def forward(self, x: list[torch.Tensor]) -> dict[str, torch.Tensor] | torch.Tensor:
-        """Fuse multi-scale features and predict depth.
+        """Predict depth from multi-scale features.
 
         Args:
             x (list[torch.Tensor]): Feature tensors [P3, P4, P5] from the backbone/neck.
@@ -847,18 +869,7 @@ class Depth(nn.Module):
                 predictor/validator resize it to image/GT size. In export mode, a (B, 1, H, W) tensor upsampled 4x to
                 the input size. Depth values are positive (exp of the clamped head output).
         """
-        # Project all levels to same channel dim
-        feats = [self.proj[i](x[i]) for i in range(self.nl)]
-
-        out = feats[-1]
-        for i in range(self.nl - 2, -1, -1):
-            # align_corners=True is baked into the released depth weights. Constant scale (consecutive pyramid
-            # levels) keeps the upsample static for dynamic-shape CoreML export; output size is identical.
-            out = F.interpolate(out, scale_factor=2, mode="bilinear", align_corners=True)
-            out = out + feats[i]
-            out = self.refine[i](out)
-
-        out = self.head(out).clamp(-4.0, 5.0)  # (B, 1, H/4, W/4) log-depth
+        out = self.log_depth(x)  # (B, 1, H/4, W/4)
         if self.training:
             return {"depth": torch.exp(out)}
 

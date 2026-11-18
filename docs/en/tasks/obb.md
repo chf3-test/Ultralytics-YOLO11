@@ -1,4 +1,5 @@
 ---
+title: Oriented Bounding Box (OBB) Detection
 comments: true
 description: Oriented bounding box (OBB) detection with Ultralytics YOLO26. Explore DOTAv1-pretrained models, then train, validate, predict, and export OBB models.
 keywords: Oriented Bounding Boxes, OBB, Object Detection, YOLO26, Ultralytics, DOTAv1, Model Training, Model Export, AI, Machine Learning
@@ -37,6 +38,10 @@ The output of an oriented object detector is a set of rotated [bounding boxes](h
 YOLO26 OBB models pretrained on the [DOTAv1](../datasets/obb/dota-v2.md#dota-v10) dataset are shown below.
 
 [Models](https://github.com/ultralytics/ultralytics/tree/main/ultralytics/cfg/models) download automatically from the latest Ultralytics [release](https://github.com/ultralytics/assets/releases) on first use.
+
+!!! note "Licensing and dataset provenance"
+
+    DOTAv1 images and annotations are limited to academic use and prohibit commercial use. Ultralytics interprets those restrictions as applying to the source dataset rather than to pretrained or fine-tuned model weights. Review the [DOTA terms](https://captain-whu.github.io/DOTA/dataset.html) for your intended use.
 
 {% include "macros/yolo-obb-perf.md" %}
 

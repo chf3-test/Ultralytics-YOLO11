@@ -21,7 +21,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 
-from ultralytics.data.utils import FORMATS_HELP_MSG, IMG_FORMATS, VID_FORMATS
+from ultralytics.data.utils import FORMATS_HELP_MSG, IMG_FORMATS, VID_FORMATS, tile_windows
 from ultralytics.utils import IS_COLAB, IS_KAGGLE, LOGGER, NUM_THREADS, REQUEST_HEADERS, ops
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.patches import PIL_FALLBACK_SUFFIXES, imread
@@ -52,6 +52,14 @@ class SourceTypes:
     screenshot: bool = False
     from_img: bool = False
     tensor: bool = False
+
+
+def tile_batches(images: list[np.ndarray], size: int | tuple[int, int], batch: int):
+    """Yield bounded crop batches and their (source index, window) metadata without copying source images."""
+    windows = [(i, w) for i, image in enumerate(images) for w in tile_windows(image.shape[:2], size)]
+    for start in range(0, len(windows), batch):
+        chunk = windows[start : start + batch]
+        yield [images[i][y1:y2, x1:x2] for i, (x1, y1, x2, y2) in chunk], chunk, start + batch >= len(windows)
 
 
 class LoadStreams:
@@ -93,6 +101,7 @@ class LoadStreams:
         - The class uses threading to efficiently load frames from multiple streams simultaneously.
         - It automatically handles YouTube links, converting them to the best available stream URL.
         - The class implements a buffer system to manage frame storage and retrieval.
+        - A streams file such as `list.streams` is read as UTF-8. Re-save a list written in a legacy encoding as UTF-8.
     """
 
     def __init__(self, sources: str = "file.streams", vid_stride: int = 1, buffer: bool = False, channels: int = 3):
@@ -112,7 +121,7 @@ class LoadStreams:
         self.cv2_flag = cv2.IMREAD_GRAYSCALE if channels == 1 else cv2.IMREAD_COLOR  # grayscale or color (BGR)
 
         if os.path.isfile(sources):
-            with open(sources) as f:
+            with open(sources, encoding="utf-8") as f:
                 sources = f.read().rsplit()
             if not sources:
                 raise FileNotFoundError(f"No streams found in {f.name}. {FORMATS_HELP_MSG}")
@@ -363,6 +372,7 @@ class LoadImagesAndVideos:
         - Supports various image formats including HEIC.
         - Handles both local files and directories.
         - Can read from a *.txt or *.csv file containing paths to images and videos.
+        - A *.txt or *.csv source list is read as UTF-8. Re-save a list written in a legacy encoding as UTF-8.
     """
 
     def __init__(self, path: str | Path | list | tuple, batch: int = 1, vid_stride: int = 1, channels: int = 3):
@@ -378,7 +388,7 @@ class LoadImagesAndVideos:
         source_path = path
         parent = None
         if isinstance(path, (str, Path)) and Path(path).suffix.lower() in {".txt", ".csv"}:  # txt/csv file with sources
-            parent, content = Path(path).parent, Path(path).read_text()
+            parent, content = Path(path).parent, Path(path).read_text(encoding="utf-8")
             if Path(path).suffix.lower() == ".txt":
                 path = content.splitlines()
             else:
@@ -462,10 +472,6 @@ class LoadImagesAndVideos:
                         paths.append(path)
                         imgs.append(im0)
                         info.append(f"video {self.count + 1}/{self.nf} (frame {self.frame}/{self.frames}) {path}: ")
-                        if self.frame == self.frames:  # end of video, flush so a batch never spans two videos
-                            self.count += 1
-                            self.cap.release()
-                            break
                 else:
                     # Move to the next file if the current video ended or failed to open
                     self.count += 1
@@ -576,13 +582,15 @@ class LoadPilAndNumpy:
             raise TypeError(f"Expected PIL/np.ndarray image type, but got {type(im)}")
         pil = isinstance(im, Image.Image)
         if pil:
-            im = ImageOps.exif_transpose(im)
+            im = ImageOps.exif_transpose(im) if im.getexif().get(274, 1) in range(2, 9) else im  # skip the upright copy
             if im.mode.startswith("I;16"):  # convert() clips 16-bit values at 255, scale them like cv2 does
                 im = Image.fromarray((np.asarray(im) >> 8).astype(np.uint8))
             flag = "L" if channels == 1 else "RGB"
             im = np.asarray(im if im.mode == flag else im.convert(flag))  # convert() copies even when mode matches
         elif im.dtype == np.uint16:  # e.g. cv2.IMREAD_UNCHANGED frames, scaled to 8 bits like imread and PIL I;16
             im = (im >> 8).astype(np.uint8)
+        elif im.dtype.kind == "f":  # 0-255 floats as uint8: cv2, PIL (classify) and MPS reject some float dtypes
+            im = im.astype(np.uint8)
         im = np.atleast_3d(im)
         # Both routes validate here: a zero dimension divides by zero in LetterBox, and a batched array reads
         # shape[2] as a channel count it is not. Raised rather than asserted so `python -O` keeps the check, and
@@ -602,7 +610,6 @@ class LoadPilAndNumpy:
                 return cv2.cvtColor(im[..., 0], cv2.COLOR_GRAY2BGR)
             return np.repeat(im, channels, axis=2)
         if channels == 1:
-            im = im.astype(np.float32, copy=False) if im.dtype.kind == "f" else im
             return cv2.cvtColor(im, cv2.COLOR_BGRA2GRAY if c == 4 else cv2.COLOR_BGR2GRAY)[..., None]
         return cv2.cvtColor(im, cv2.COLOR_BGRA2BGR) if u8 and c == 4 else np.ascontiguousarray(im[..., :3])
 

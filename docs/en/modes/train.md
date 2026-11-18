@@ -306,7 +306,7 @@ See the implementation in `ultralytics/optim/muon.py` and the optimizer auto-sel
 
     The `batch` argument accepts three kinds of values, and the trainer adds two safeguards:
 
-    - **Fixed [Batch Size](https://www.ultralytics.com/glossary/batch-size)**: Set an integer value (e.g., `batch=16`), specifying the number of images per batch directly.
+    - **Fixed [Batch Size](https://www.ultralytics.com/glossary/batch-size)**: Set an integer value (e.g., `batch=16`), specifying the number of images per batch directly. Multi-GPU training splits this global batch evenly across GPUs, so it must be at least the GPU count; a remainder is dropped (e.g., `batch=15` on 2 GPUs trains 7 images per GPU).
     - **Auto Mode (60% GPU Memory)**: Use `batch=-1` to automatically adjust batch size for approximately 60% of the CUDA memory available to training.
     - **Auto Mode with Utilization Fraction**: Set a fraction value (e.g., `batch=0.70`) to adjust batch size based on the specified fraction of available GPU memory.
     - **OOM Auto-Retry**: If a CUDA out-of-memory error occurs during the first epoch, the trainer automatically halves the batch size and retries (up to 3 times). This only applies to single-GPU training; multi-GPU (DDP) training will raise the error immediately.
@@ -470,7 +470,7 @@ Check the section on [Resuming Interrupted Trainings](#resuming-interrupted-trai
 
 ### How do I train a model on an imbalanced dataset?
 
-Class imbalance occurs when some classes have significantly fewer examples than others in your training data. This can cause the model to perform poorly on rare classes. Ultralytics YOLO supports class weighting through the `cls_pw` argument to address this issue.
+Class imbalance occurs when some classes have significantly fewer examples than others in your training data. This can cause the model to perform poorly on rare classes. Ultralytics YOLO supports class weighting through the `cls_pw` argument to address this issue. Loss weighting works best as the last step, after collecting and oversampling the rare classes, as described in [Handling Class Imbalance](../guides/preprocessing-annotated-data.md#handling-class-imbalance).
 
 The `cls_pw` argument controls class weighting power based on inverse class frequency:
 
@@ -478,7 +478,7 @@ The `cls_pw` argument controls class weighting power based on inverse class freq
 - `cls_pw=1.0`: Applies full inverse frequency weighting
 - Values between `0.0` and `1.0`: Provide partial weighting for moderate imbalance
 
-The class weights are computed as `(1.0 / class_counts) ^ cls_pw` and normalized so their mean equals 1.0. Classes without training labels, such as those excluded by `classes=`, get a weight of 1.0.
+The class weights are computed as `(1.0 / class_counts) ^ cls_pw` and normalized so their mean equals 1.0. `class_counts` is the number of labeled objects per class, or the number of training images per class for classification, and classes without training labels, such as those excluded by `classes=`, get a weight of 1.0. Semantic segmentation computes its weights from pixel frequency instead, as `(1.0 / ln(1.02 + p)) ^ cls_pw`, where `p` is the share of labeled training pixels in each class, so a class without labeled pixels gets the largest weight.
 
 !!! example "Training on Imbalanced Dataset"
 

@@ -154,8 +154,8 @@ class BaseBackend(ABC):
         Single-file formats embed metadata in a length-prefixed JSON header (``.engine``), a zip entry
         (``.torchscript``, ``.tflite``) or protobuf string map entries (``.onnx``, ``.mlpackage``), and every other
         format writes a ``metadata.yaml`` sidecar beside or inside the export. Core AI has its own
-        ``metadata.json`` inside the ``.aimodel`` asset. MNN keeps it in a flatbuffer
-        ``bizCode`` field and Triton serves it over HTTP, so neither is read here.
+        ``metadata.json`` inside the ``.aimodel`` asset and MNN its flatbuffer ``bizCode`` string. Triton serves it over
+        HTTP, so it is not read here.
 
         Args:
             file (str | Path): Path to an exported model file or directory.
@@ -183,6 +183,15 @@ class BaseBackend(ABC):
                 return _read_proto_map(next(p.glob("*.onnx")) if p.is_dir() else p, (14,))  # metadata_props
             if suffix in {".mlpackage", ".mlmodel"}:  # description.metadata.userDefined
                 return _read_proto_map(next(p.rglob("*.mlmodel")) if p.is_dir() else p, (2, 100, 100))
+            if suffix == ".mnn":  # flatbuffer root table Net, whose field 0 is the bizCode string
+                import mmap
+                import struct
+
+                with open(p, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as b:
+                    table = struct.unpack_from("<I", b)[0]
+                    field = table + struct.unpack_from("<H", b, table - struct.unpack_from("<i", b, table)[0] + 4)[0]
+                    s = field + struct.unpack_from("<I", b, field)[0]
+                    return json.loads(b[s + 4 : s + 4 + struct.unpack_from("<I", b, s)[0]])
             if suffix == ".aimodel":  # Core AI keeps it in the asset's own metadata.json
                 return json.loads((p / "metadata.json").read_text()).get("creatorDefinedMetadata", {})
             sidecar = (p if p.is_dir() else p.parent) / "metadata.yaml"  # openvino, ncnn, paddle, saved_model, ...
@@ -221,3 +230,21 @@ class BaseBackend(ABC):
         # Apply all metadata fields as backend attributes
         for k, v in metadata.items():
             setattr(self, k, v)
+
+    def denormalize(self, x, w: int, h: int, end2end: bool = False) -> None:
+        """Scale box and pose keypoint coordinates normalized to [0, 1] by the input size to pixels, in place.
+
+        Args:
+            x (np.ndarray): Raw (B, 4 + nc + extra, N) prediction, or (B, N, 6 + extra) end2end prediction.
+            w (int): Input image width.
+            h (int): Input image height.
+            end2end (bool): Whether `x` is an end2end prediction with channels last.
+        """
+        if end2end:
+            x = x.transpose(0, 2, 1)  # channels-first view, so the scaling below writes through to the output
+        x[:, [0, 2]] *= w
+        x[:, [1, 3]] *= h
+        if self.task == "pose":  # keypoints follow the box and class scores, or the box, score and class if end2end
+            nd, i = self.kpt_shape[1], 6 if end2end else 4 + len(self.names)
+            x[:, i::nd] *= w
+            x[:, i + 1 :: nd] *= h

@@ -1,4 +1,5 @@
 ---
+title: FastSAM Real-Time Segment Anything Model
 comments: true
 description: FastSAM is a real-time, CNN-based Segment Anything model built on YOLOv8-seg. Learn its architecture, prompt types, speed versus SAM, and Ultralytics usage.
 keywords: FastSAM, Fast Segment Anything Model, Ultralytics, real-time segmentation, instance segmentation, FastSAM vs YOLO, FastSAM vs SAM, YOLOv8-seg, YOLO26-seg, zero-shot segmentation, object segmentation
@@ -360,7 +361,7 @@ For more details on inference methods, check the [Predict Usage](#predict-usage)
 FastSAM supports multiple prompt types for guiding the segmentation tasks:
 
 - **Everything Prompt**: Generates segmentation for all visible objects.
-- **Bounding Box (BBox) Prompt**: Segments objects within a specified bounding box.
+- **Bounding Box (BBox) Prompt**: Segments objects within a specified bounding box. A box that overlaps no detected mask selects nothing.
 - **Text Prompt**: Uses a descriptive text to segment objects matching the description.
 - **Point Prompt**: Segments objects near specific user-defined points.
 
